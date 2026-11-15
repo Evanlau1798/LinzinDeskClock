@@ -61,6 +61,9 @@
     <string name="current_location">目前位置</string>
     <string name="weather_disabled_title">尚未啟用天氣資訊</string>
     <string name="weather_disabled_desc">請點擊右上角 ⚙ 設定\n開啟「啟用當地天氣資訊」\n並授予位置權限即可顯示</string>
+    <string name="weather_unavailable_title">尚未取得天氣資訊</string>
+    <string name="weather_unavailable_desc">目前無法取得定位或網路資料\n點擊此處手動重新整理</string>
+    <string name="weather_refreshing_title">正在更新天氣資訊…</string>
 
     <!-- 設定對話框：行事曆行程設定 -->
     <string name="pref_calendar_title">顯示行事曆近期行程</string>
@@ -91,6 +94,8 @@
     <string name="pref_burn_in_desc">定時微幅抖動畫面像素以保護 OLED 螢幕 (預設開啟)</string>
     <string name="pref_flip_180_title">強制畫面 180° 反轉</string>
     <string name="pref_flip_180_desc">鎖定螢幕旋轉並反轉 180°，修正小摺疊機外螢幕或帳篷模式畫面倒置問題</string>
+    <string name="pref_cutout_title">全螢幕延伸至挖孔區域</string>
+    <string name="pref_cutout_desc">關閉後將在鏡頭挖孔側保留黑邊，避免遮擋角落資訊</string>
     <string name="pref_brightness_title">手動調整亮度</string>
     <string name="pref_brightness_desc_manual">自訂視窗亮度</string>
     <string name="pref_brightness_desc_auto">跟隨系統自動設定</string>
@@ -128,5 +133,14 @@
     <string name="settings_update_available_title">發現新版本：%1$s</string>
     <string name="settings_update_available_desc">新版本已在 GitHub 上發布，建議立即前往下載更新。</string>
     <string name="settings_btn_go_to_github_releases">前往 GitHub Releases 下載</string>
+
+    <!-- Android 12 以下老機型提示視窗 -->
+    <string name="legacy_android_dialog_title">舊版 Android 系統相容性提示</string>
+    <string name="legacy_android_dialog_desc">偵測到您的裝置系統為 Android 12 或更早版本，部分依賴新系統 API 的功能將受限或無法運作：\n\n• 摺疊機感應：Android 10 以下不支援轉軸角度與自動外螢幕切換，將以一般螢幕模式執行。\n• 防烙印交錯保護：像素級著色器（Shader）僅支援 Android 13 以上系統。\n• 挖孔黑邊切換：瀏海與挖孔邊界控制僅支援 Android 9.0 以上系統。\n• 當地天氣定位：舊版系統僅能讀取系統快取位置，若無法更新請先開啟地圖 App 定位一次。</string>
+    <string name="legacy_android_dialog_btn_ok">我知道了</string>
+
+    <!-- 設定頁面不支援提示 -->
+    <string name="pref_burn_in_unsupported">需 Android 13 以上系統方可支援</string>
+    <string name="pref_cutout_unsupported">需 Android 9.0 以上系統方可支援</string>
 
 </resources>

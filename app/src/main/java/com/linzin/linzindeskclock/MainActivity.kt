@@ -6,6 +6,7 @@ import android.app.Activity
 import android.content.BroadcastReceiver
 import android.content.ContentUris
 import android.content.Context
+import android.content.ContextWrapper
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.ActivityInfo
@@ -54,6 +55,8 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.displayCutout
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -63,6 +66,7 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.foundation.pager.PagerState
@@ -120,6 +124,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.painterResource
@@ -210,16 +215,52 @@ data class UpcomingCalendarEvent(
     val timeLabel: String
 )
 
+tailrec fun Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
+}
+
+fun getSystemDefaultLocale(): Locale {
+    return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+        android.content.res.Resources.getSystem().configuration.locales[0]
+    } else {
+        @Suppress("DEPRECATION")
+        android.content.res.Resources.getSystem().configuration.locale
+    }
+}
+
+private val cachedDateFormats = mutableMapOf<String, SimpleDateFormat>()
+
+private fun getCachedDateFormat(pattern: String, locale: Locale = Locale.US): SimpleDateFormat {
+    val key = "$pattern|${locale.toLanguageTag()}"
+    return cachedDateFormats.getOrPut(key) {
+        SimpleDateFormat(pattern, locale)
+    }
+}
+
+fun formatCornerDate(timeMillis: Long, languageTag: String): String {
+    val locale = if (languageTag == "system") {
+        getSystemDefaultLocale()
+    } else {
+        Locale.forLanguageTag(languageTag)
+    }
+    val date = Date(timeMillis)
+    val isCjk = locale.language in listOf("zh", "ja")
+    return if (isCjk) {
+        val weekStr = getCachedDateFormat("EEEE", locale).format(date)
+        val dateStr = getCachedDateFormat("M月d日", locale).format(date)
+        "$weekStr, $dateStr"
+    } else {
+        getCachedDateFormat("EEEE, MMMM d", locale).format(date)
+    }
+}
+
 var currentAppLocaleTag by mutableStateOf("system")
 
 fun updateActivityResourcesLocale(context: Context, languageCode: String) {
     val targetLocale = if (languageCode == "system") {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-            android.content.res.Resources.getSystem().configuration.locales[0]
-        } else {
-            @Suppress("DEPRECATION")
-            android.content.res.Resources.getSystem().configuration.locale
-        }
+        getSystemDefaultLocale()
     } else {
         Locale.forLanguageTag(languageCode)
     }
@@ -230,6 +271,15 @@ fun updateActivityResourcesLocale(context: Context, languageCode: String) {
     config.setLocale(targetLocale)
     @Suppress("DEPRECATION")
     res.updateConfiguration(config, res.displayMetrics)
+
+    val appContext = context.applicationContext
+    if (appContext != null && appContext !== context) {
+        val appRes = appContext.resources
+        val appConfig = android.content.res.Configuration(appRes.configuration)
+        appConfig.setLocale(targetLocale)
+        @Suppress("DEPRECATION")
+        appRes.updateConfiguration(appConfig, appRes.displayMetrics)
+    }
 }
 
 fun setAppLanguage(context: Context, languageCode: String) {
@@ -396,24 +446,59 @@ fun executeShellCommand(command: String) {
 }
 
 /**
+ * 動態設定視窗是否延伸至螢幕挖孔/瀏海區域 (Android 9+ 有效)
+ */
+fun applyDisplayCutoutMode(window: Window?, extendCutout: Boolean) {
+    if (window == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.P) return
+    window.attributes = window.attributes.apply {
+        layoutInDisplayCutoutMode = if (extendCutout) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+            } else {
+                WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+            }
+        } else {
+            WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_NEVER
+        }
+    }
+}
+
+/**
  * 主動獲取最新定位（優先嘗試高時效快取，若無則在 Android 11+ 主動單次定位）
+ */
+private fun isValidLocation(loc: Location?): Boolean {
+    if (loc == null) return false
+    return kotlin.math.abs(loc.latitude) > 0.001 || kotlin.math.abs(loc.longitude) > 0.001
+}
+
+/**
+ * 主動獲取最新定位（過濾 0.0 無效座標，並支援舊版系統主動喚醒定位）
  */
 @SuppressLint("MissingPermission")
 suspend fun fetchBestLocation(context: Context): Location? = withContext(Dispatchers.IO) {
     val locationManager = context.getSystemService(Context.LOCATION_SERVICE) as? LocationManager
         ?: return@withContext null
 
-    // 1. 抓取快取
-    val lastLocation = locationManager.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)
-        ?: locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER)
-        ?: locationManager.getLastKnownLocation(LocationManager.PASSIVE_PROVIDER)
+    // 1. 抓取快取並過濾無效的 (0.0, 0.0) 假座標
+    val candidates = listOf(
+        LocationManager.NETWORK_PROVIDER,
+        LocationManager.GPS_PROVIDER,
+        LocationManager.PASSIVE_PROVIDER
+    ).mapNotNull { provider ->
+        try {
+            locationManager.getLastKnownLocation(provider)?.takeIf { isValidLocation(it) }
+        } catch (_: Exception) {
+            null
+        }
+    }
+    val lastLocation = candidates.maxByOrNull { it.time }
 
-    // 若快取在 10 分鐘內，直接視為有效位置返回以節省電量
+    // 若有效快取在 10 分鐘內，直接返回以節省電量
     if (lastLocation != null && (System.currentTimeMillis() - lastLocation.time) < 10 * 60 * 1000L) {
         return@withContext lastLocation
     }
 
-    // 2. Android 11+ (API 30+) 發起主動單次定位（加 5 秒逾時保護，避免無衛星時卡住）
+    // 2. Android 11+ (API 30+) 發起主動單次定位
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
         try {
             withTimeoutOrNull(5000L) {
@@ -433,21 +518,54 @@ suspend fun fetchBestLocation(context: Context): Location? = withContext(Dispatc
                         ContextCompat.getMainExecutor(context)
                     ) { loc ->
                         if (cont.isActive) {
-                            cont.resume(loc ?: lastLocation)
+                            cont.resume(if (isValidLocation(loc)) loc else lastLocation)
                         }
                     }
                 }
             } ?: lastLocation
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             lastLocation
         }
     } else {
-        lastLocation
+        // 3. Android 5.0 ~ 10：主動註冊一次性 LocationListener 喚醒定位
+        val providers = listOf(LocationManager.NETWORK_PROVIDER, LocationManager.GPS_PROVIDER)
+            .filter { try { locationManager.isProviderEnabled(it) } catch (_: Exception) { false } }
+        if (providers.isEmpty()) return@withContext lastLocation
+
+        withTimeoutOrNull(6000L) {
+            suspendCancellableCoroutine<Location?> { cont ->
+                val listener = object : android.location.LocationListener {
+                    override fun onLocationChanged(location: Location) {
+                        if (!isValidLocation(location)) return // 忽略剛啟動時的 0.0 座標
+                        locationManager.removeUpdates(this)
+                        if (cont.isActive) cont.resume(location)
+                    }
+                    @Deprecated("Deprecated in Java")
+                    override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) {}
+                    override fun onProviderEnabled(provider: String) {}
+                    override fun onProviderDisabled(provider: String) {}
+                }
+
+                try {
+                    providers.forEach { provider ->
+                        locationManager.requestLocationUpdates(
+                            provider, 0L, 0f, listener, android.os.Looper.getMainLooper()
+                        )
+                    }
+                } catch (_: Exception) {
+                    if (cont.isActive) cont.resume(lastLocation)
+                }
+
+                cont.invokeOnCancellation {
+                    try { locationManager.removeUpdates(listener) } catch (_: Exception) {}
+                }
+            }
+        } ?: lastLocation
     }
 }
 
 /**
- * 整合抓取定位、反向地理編碼與 Open-Meteo 天氣
+ * 整合抓取定位（優先真實定位 -> 歷史有效座標 -> 室內 IP 備援）、反向地理編碼與 Open-Meteo 天氣
  */
 suspend fun fetchAndApplyWeather(
     context: Context,
@@ -455,27 +573,73 @@ suspend fun fetchAndApplyWeather(
     onResult: (WeatherInfo?) -> Unit
 ) = withContext(Dispatchers.IO) {
     try {
+        val prefs = context.getSharedPreferences("desk_clock_prefs", Context.MODE_PRIVATE)
         val location = fetchBestLocation(context)
-        val lat = location?.latitude ?: 24.838
-        val lon = location?.longitude ?: 121.017
 
-        // 預設採用「目前位置」，即便 Geocoder 逾時或失敗也不會死板卡在「新竹市」
-        var detectedCity = currentLocationStr
-        try {
-            val geocoder = Geocoder(context, Locale.getDefault())
-            val addresses = geocoder.getFromLocation(lat, lon, 1)
-            if (!addresses.isNullOrEmpty()) {
-                val addr = addresses[0]
-                detectedCity = addr.locality
-                    ?: addr.subAdminArea
-                            ?: addr.adminArea
-                            ?: currentLocationStr
+        var lat: Double? = null
+        var lon: Double? = null
+        var detectedCity: String? = null
+
+        if (location != null && isValidLocation(location)) {
+            // 1. 成功取得硬體/系統定位，更新並持久化保存座標供室內備援使用
+            lat = location.latitude
+            lon = location.longitude
+            prefs.edit()
+                .putString("pref_last_valid_lat", lat.toString())
+                .putString("pref_last_valid_lon", lon.toString())
+                .apply()
+        } else {
+            // 2. 室內無法取得即時定位時，優先沿用上一次儲存的真實座標
+            val savedLat = prefs.getString("pref_last_valid_lat", null)?.toDoubleOrNull()
+            val savedLon = prefs.getString("pref_last_valid_lon", null)?.toDoubleOrNull()
+            if (savedLat != null && savedLon != null) {
+                lat = savedLat
+                lon = savedLon
+            } else {
+                // 3. 若該裝置從未取得過任何定位，才使用 IP 定位備援
+                val ipLoc = fetchIpLocationFallback()
+                if (ipLoc != null) {
+                    lat = ipLoc.first
+                    lon = ipLoc.second
+                    detectedCity = ipLoc.third
+                }
             }
-        } catch (e: Exception) {
-            detectedCity = currentLocationStr
         }
 
-        val data = fetchOpenMeteoWeather(lat, lon, detectedCity)
+        val finalLat = lat ?: 24.838
+        val finalLon = lon ?: 121.017
+
+        val langTag = if (currentAppLocaleTag == "system") {
+            getSystemDefaultLocale().toLanguageTag()
+        } else {
+            currentAppLocaleTag
+        }
+
+        // 1. 優先嘗試 Android 原生 Geocoder（僅取城市、縣市、鄉鎮區層級，不取省/州級 adminArea）
+        try {
+            val geocoder = Geocoder(context, Locale.getDefault())
+            @Suppress("DEPRECATION")
+            val addresses = geocoder.getFromLocation(finalLat, finalLon, 1)
+            if (!addresses.isNullOrEmpty()) {
+                val addr = addresses[0]
+                val geoCity = addr.locality
+                    ?: addr.subAdminArea
+                    ?: addr.subLocality
+                if (!geoCity.isNullOrBlank()) {
+                    detectedCity = geoCity.trim()
+                }
+            }
+        } catch (_: Exception) {
+            // 舊版 GMS 服務異常時略過
+        }
+
+        // 2. 若仍無具體城市名稱，使用線上反向地理編碼取得 Level 5~8 行政區
+        if (detectedCity.isNullOrBlank()) {
+            detectedCity = fetchCityNameFallback(finalLat, finalLon, langTag)
+        }
+
+        val finalCityName = detectedCity?.takeIf { it.isNotBlank() } ?: currentLocationStr
+        val data = fetchOpenMeteoWeather(finalLat, finalLon, finalCityName)
         withContext(Dispatchers.Main) {
             onResult(data)
         }
@@ -485,17 +649,129 @@ suspend fun fetchAndApplyWeather(
 }
 
 /**
- * 查詢 Open-Meteo 天氣預報 API 並解析
+ * 室內 IP 定位備援（僅讀取 city 欄位，不退回讀取省/州級 regionName）
  */
-suspend fun fetchOpenMeteoWeather(lat: Double, lon: Double, cityName: String): WeatherInfo? = withContext(Dispatchers.IO) {
-    try {
-        val urlStr = "https://api.open-meteo.com/v1/forecast?latitude=$lat&longitude=$lon&current=temperature_2m,weather_code&hourly=temperature_2m,weather_code&timezone=auto"
-        val connection = URL(urlStr).openConnection() as HttpURLConnection
-        connection.requestMethod = "GET"
-        connection.connectTimeout = 8000
-        connection.readTimeout = 8000
+private fun fetchIpLocationFallback(): Triple<Double, Double, String?>? {
+    return try {
+        val conn = (URL("http://ip-api.com/json/?fields=status,city,lat,lon").openConnection() as HttpURLConnection).apply {
+            requestMethod = "GET"
+            connectTimeout = 5000
+            readTimeout = 5000
+            connect()
+        }
+        val text = conn.inputStream.bufferedReader().use { it.readText() }
+        val json = JSONObject(text)
+        if (json.optString("status") == "success") {
+            val lat = json.getDouble("lat")
+            val lon = json.getDouble("lon")
+            val city = json.optString("city", "").trim().takeIf { it.isNotBlank() }
+            Triple(lat, lon, city)
+        } else {
+            null
+        }
+    } catch (_: Exception) {
+        null
+    }
+}
+
+/**
+ * 線上反向地理編碼備援（嚴格限定為城市／鄉鎮區層級，排除國家與一級省州層級）
+ */
+private fun fetchCityNameFallback(lat: Double, lon: Double, languageTag: String): String? {
+    return try {
+        val urlStr = "https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=$lat&longitude=$lon&localityLanguage=$languageTag"
+        val connection = try {
+            (URL(urlStr).openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                connectTimeout = 6000
+                readTimeout = 6000
+                connect()
+            }
+        } catch (e: javax.net.ssl.SSLException) {
+            val httpUrlStr = urlStr.replaceFirst("https://", "http://")
+            (URL(httpUrlStr).openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                connectTimeout = 6000
+                readTimeout = 6000
+                connect()
+            }
+        }
 
         val responseText = connection.inputStream.bufferedReader().use { it.readText() }
+        val json = JSONObject(responseText)
+
+        val countryName = json.optString("countryName", "").trim()
+        val subdivision = json.optString("principalSubdivision", "").trim()
+
+        // 1. 優先讀取具體城市或鄉鎮市區欄位，並確保不與國家或一級省州名稱重複
+        val directCity = listOf(
+            json.optString("locality", "").trim(),
+            json.optString("city", "").trim()
+        ).firstOrNull { it.isNotBlank() && it != countryName && it != subdivision }
+
+        if (directCity != null) return directCity
+
+        // 2. 從 administrative 陣列中嚴格篩選 adminLevel 5~8（縣市、區、鄉鎮層級）
+        val adminArray = json.optJSONObject("localityInfo")?.optJSONArray("administrative")
+        if (adminArray != null) {
+            for (i in adminArray.length() - 1 downTo 0) {
+                val item = adminArray.optJSONObject(i) ?: continue
+                val level = item.optInt("adminLevel", 0)
+                if (level in 5..8) {
+                    val candidate = item.optString("name", "").trim()
+                    if (candidate.isNotBlank() && candidate != countryName && candidate != subdivision) {
+                        return candidate
+                    }
+                }
+            }
+        }
+
+        // 若無法精確解析到城市層級，回傳 null 交由上層顯示「目前位置 / 現在地」
+        null
+    } catch (_: Exception) {
+        null
+    }
+}
+
+/**
+ * 查詢 Open-Meteo 天氣預報 API 並解析（含連線容錯與 HTTP 備援）
+ */
+suspend fun fetchOpenMeteoWeather(lat: Double, lon: Double, cityName: String): WeatherInfo? = withContext(Dispatchers.IO) {
+    // 加上 forecast_days=2 只抓今明兩天（48小時），大幅縮小封包體積並加快回應速度
+    val httpsUrl = "https://api.open-meteo.com/v1/forecast?latitude=$lat&longitude=$lon&current=temperature_2m,weather_code&hourly=temperature_2m,weather_code&forecast_days=2&timezone=auto"
+    val httpUrl = httpsUrl.replaceFirst("https://", "http://")
+
+    fun requestJson(targetUrl: String, timeoutMs: Int): String {
+        val conn = (URL(targetUrl).openConnection() as HttpURLConnection).apply {
+            requestMethod = "GET"
+            connectTimeout = timeoutMs
+            readTimeout = timeoutMs
+            useCaches = false
+            // 避免重複使用可能已半斷線的 Keep-Alive Socket，確保每次手動重整都建立全新連線
+            setRequestProperty("Connection", "close")
+            setRequestProperty("User-Agent", "LinzinDeskClock-Android")
+        }
+        try {
+            val code = conn.responseCode
+            if (code !in 200..299) {
+                throw java.io.IOException("HTTP error code: $code")
+            }
+            return conn.inputStream.bufferedReader().use { it.readText() }
+        } finally {
+            conn.disconnect()
+        }
+    }
+
+    try {
+        // 1. 先嘗試 HTTPS（6 秒逾時，避免握手卡死拖太久）
+        // 2. 無論是憑證過期 (SSLException) 或握手逾時 (SocketTimeoutException)，皆立即改走 HTTP 備援
+        val responseText = try {
+            requestJson(httpsUrl, timeoutMs = 6000)
+        } catch (e: Exception) {
+            Log.w("DeskClockWeather", "HTTPS failed (${e.javaClass.simpleName}), retrying via HTTP...")
+            requestJson(httpUrl, timeoutMs = 8000)
+        }
+
         val root = JSONObject(responseText)
 
         val currentObj = root.getJSONObject("current")
@@ -627,28 +903,8 @@ suspend fun checkForAppUpdate(currentVersionName: String): AppUpdateInfo? = with
 // 3. 防烙印 Shader 修飾符
 // ==========================================
 
-fun Modifier.checkerboardBurnInProtection(isIdle: Boolean): Modifier = composed {
-    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
-        return@composed this
-    }
-
-    var phase by remember { mutableIntStateOf(0) }
-
-    LaunchedEffect(isIdle) {
-        if (isIdle) {
-            while (true) {
-                delay(300_000L)
-                phase = (phase + 1) % 2
-            }
-        } else {
-            phase = 0
-        }
-    }
-
-    if (!isIdle) {
-        return@composed this
-    }
-
+@androidx.annotation.RequiresApi(Build.VERSION_CODES.TIRAMISU)
+private fun Modifier.applyTiramisuBurnInShader(phase: Int): Modifier = composed {
     val shader = remember {
         RuntimeShader(
             """
@@ -676,6 +932,31 @@ fun Modifier.checkerboardBurnInProtection(isIdle: Boolean): Modifier = composed 
             renderEffect = null
         }
     }
+}
+
+fun Modifier.checkerboardBurnInProtection(isIdle: Boolean): Modifier = composed {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+        return@composed this
+    }
+
+    var phase by remember { mutableIntStateOf(0) }
+
+    LaunchedEffect(isIdle) {
+        if (isIdle) {
+            while (true) {
+                delay(300_000L)
+                phase = (phase + 1) % 2
+            }
+        } else {
+            phase = 0
+        }
+    }
+
+    if (!isIdle) {
+        return@composed this
+    }
+
+    this.applyTiramisuBurnInShader(phase)
 }
 
 // ==========================================
@@ -728,7 +1009,7 @@ fun rememberBatteryState(): BatteryState {
 fun SystemBarsController(hideSystemBars: Boolean) {
     val view = LocalView.current
     if (!view.isInEditMode) {
-        val window = (view.context as? Activity)?.window ?: return
+        val window = view.context.findActivity()?.window ?: return
         DisposableEffect(hideSystemBars) {
             val controller = WindowCompat.getInsetsController(window, view)
             WindowCompat.setDecorFitsSystemWindows(window, !hideSystemBars)
@@ -950,6 +1231,47 @@ fun MaterialLockIcon(
             end = Offset(keyHoleCx, keyHoleCy + bodyH * 0.32f),
             strokeWidth = 1.6.dp.toPx(),
             cap = StrokeCap.Round
+        )
+    }
+}
+
+@Composable
+fun MaterialSettingsIcon(
+    modifier: Modifier = Modifier,
+    color: Color = Color.White
+) {
+    Canvas(modifier = modifier) {
+        val w = size.width
+        val h = size.height
+        val cx = w / 2f
+        val cy = h / 2f
+
+        val ringRadius = w * 0.28f
+        val ringStroke = w * 0.13f
+        val toothStart = ringRadius
+        val toothEnd = w * 0.40f
+        val toothStroke = w * 0.13f
+
+        // 1. 繪製外圈 8 個齒輪齒
+        for (i in 0 until 8) {
+            val angleRad = (i * 45f) * (PI / 180f).toFloat()
+            val cosA = cos(angleRad)
+            val sinA = sin(angleRad)
+            drawLine(
+                color = color,
+                start = Offset(cx + toothStart * cosA, cy + toothStart * sinA),
+                end = Offset(cx + toothEnd * cosA, cy + toothEnd * sinA),
+                strokeWidth = toothStroke,
+                cap = StrokeCap.Round
+            )
+        }
+
+        // 2. 繪製齒輪主體圓環（中央自然鏤空）
+        drawCircle(
+            color = color,
+            radius = ringRadius,
+            center = Offset(cx, cy),
+            style = Stroke(width = ringStroke)
         )
     }
 }
@@ -1711,6 +2033,71 @@ fun SwitchToDualLayoutDialog(
 }
 
 @Composable
+fun LegacyAndroidNoticeDialog(
+    onDismiss: () -> Unit
+) {
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth(0.88f)
+                .wrapContentHeight(),
+            shape = RoundedCornerShape(24.dp),
+            color = Color(0xFF1E1E22)
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(24.dp)
+                    .verticalScroll(rememberScrollState()),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text(
+                    text = stringResource(R.string.legacy_android_dialog_title),
+                    color = Color.White,
+                    fontSize = 19.sp,
+                    fontWeight = FontWeight.Bold,
+                    textAlign = TextAlign.Center
+                )
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                Text(
+                    text = stringResource(R.string.legacy_android_dialog_desc),
+                    color = Color(0xFFC4C4CC),
+                    fontSize = 13.5.sp,
+                    lineHeight = 20.sp,
+                    textAlign = TextAlign.Start,
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                Spacer(modifier = Modifier.height(22.dp))
+
+                Surface(
+                    onClick = onDismiss,
+                    shape = RoundedCornerShape(12.dp),
+                    color = Color(0xFF81C7D4),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(44.dp)
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Text(
+                            text = stringResource(R.string.legacy_android_dialog_btn_ok),
+                            color = Color(0xFF041E49),
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
 fun ClamshellNoticeDialog(
     onDismiss: () -> Unit,
     onFallbackToNonFoldable: () -> Unit
@@ -1909,7 +2296,7 @@ fun NonFoldableDialog(
                     onClick = {
                         val randomToast = rejectToasts[Random.nextInt(rejectToasts.size)]
                         Toast.makeText(context, randomToast, Toast.LENGTH_SHORT).show()
-                        (context as? Activity)?.finishAffinity()
+                        context.findActivity()?.finishAffinity()
                     },
                     shape = RoundedCornerShape(12.dp),
                     color = Color(0xFF2C2C34),
@@ -1992,6 +2379,8 @@ fun ClockSettingsDialog(
     onBurnInProtectionChange: (Boolean) -> Unit,
     flipScreen180: Boolean,
     onFlipScreen180Change: (Boolean) -> Unit,
+    extendCutout: Boolean,
+    onExtendCutoutChange: (Boolean) -> Unit,
     onOpenTutorial: () -> Unit,
     updateInfo: AppUpdateInfo?,
     isCheckingUpdate: Boolean,
@@ -2013,6 +2402,11 @@ fun ClockSettingsDialog(
             showSuggestDualDialog = true
         }
     }
+
+    // 系統版本與硬體支援度判定
+    val isHingeSupported = hasHingeSensor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
+    val isBurnInSupported = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+    val isCutoutSupported = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P
 
     Dialog(
         onDismissRequest = onDismiss,
@@ -2343,7 +2737,7 @@ fun ClockSettingsDialog(
                             .fillMaxWidth()
                             .clip(RoundedCornerShape(8.dp))
                             .then(
-                                if (hasHingeSensor) {
+                                if (isHingeSupported) {
                                     Modifier.clickable { onShowHingeAngleChange(!showHingeAngle) }
                                 } else Modifier
                             )
@@ -2356,22 +2750,22 @@ fun ClockSettingsDialog(
                                 text = stringResource(R.string.pref_hinge_title),
                                 fontSize = 18.sp,
                                 fontWeight = FontWeight.SemiBold,
-                                color = if (hasHingeSensor) Color.White else Color(0xFF6E6E78)
+                                color = if (isHingeSupported) Color.White else Color(0xFF6E6E78)
                             )
                             Text(
-                                text = if (hasHingeSensor) {
+                                text = if (isHingeSupported) {
                                     stringResource(R.string.pref_hinge_desc)
                                 } else {
                                     stringResource(R.string.pref_hinge_unsupported)
                                 },
                                 fontSize = 13.sp,
-                                color = if (hasHingeSensor) Color.Gray else Color(0xFFE57373)
+                                color = if (isHingeSupported) Color.Gray else Color(0xFFE57373)
                             )
                         }
                         Switch(
-                            checked = if (hasHingeSensor) showHingeAngle else false,
+                            checked = if (isHingeSupported) showHingeAngle else false,
                             onCheckedChange = null,
-                            enabled = hasHingeSensor
+                            enabled = isHingeSupported
                         )
                     }
 
@@ -2382,7 +2776,11 @@ fun ClockSettingsDialog(
                         modifier = Modifier
                             .fillMaxWidth()
                             .clip(RoundedCornerShape(8.dp))
-                            .clickable { onBurnInProtectionChange(!burnInProtectionEnabled) }
+                            .then(
+                                if (isBurnInSupported) {
+                                    Modifier.clickable { onBurnInProtectionChange(!burnInProtectionEnabled) }
+                                } else Modifier
+                            )
                             .padding(vertical = 12.dp, horizontal = 4.dp),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
@@ -2392,17 +2790,22 @@ fun ClockSettingsDialog(
                                 text = stringResource(R.string.pref_burn_in_title),
                                 fontSize = 18.sp,
                                 fontWeight = FontWeight.SemiBold,
-                                color = Color.White
+                                color = if (isBurnInSupported) Color.White else Color(0xFF6E6E78)
                             )
                             Text(
-                                text = stringResource(R.string.pref_burn_in_desc),
+                                text = if (isBurnInSupported) {
+                                    stringResource(R.string.pref_burn_in_desc)
+                                } else {
+                                    stringResource(R.string.pref_burn_in_unsupported)
+                                },
                                 fontSize = 13.sp,
-                                color = Color.Gray
+                                color = if (isBurnInSupported) Color.Gray else Color(0xFFE57373)
                             )
                         }
                         Switch(
-                            checked = burnInProtectionEnabled,
-                            onCheckedChange = null
+                            checked = if (isBurnInSupported) burnInProtectionEnabled else false,
+                            onCheckedChange = null,
+                            enabled = isBurnInSupported
                         )
                     }
 
@@ -2432,6 +2835,44 @@ fun ClockSettingsDialog(
                         Switch(
                             checked = flipScreen180,
                             onCheckedChange = null
+                        )
+                    }
+
+                    // 全螢幕延伸至挖孔區域開關
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .then(
+                                if (isCutoutSupported) {
+                                    Modifier.clickable { onExtendCutoutChange(!extendCutout) }
+                                } else Modifier
+                            )
+                            .padding(vertical = 12.dp, horizontal = 4.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = stringResource(R.string.pref_cutout_title),
+                                fontSize = 18.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = if (isCutoutSupported) Color.White else Color(0xFF6E6E78)
+                            )
+                            Text(
+                                text = if (isCutoutSupported) {
+                                    stringResource(R.string.pref_cutout_desc)
+                                } else {
+                                    stringResource(R.string.pref_cutout_unsupported)
+                                },
+                                fontSize = 13.sp,
+                                color = if (isCutoutSupported) Color.Gray else Color(0xFFE57373)
+                            )
+                        }
+                        Switch(
+                            checked = if (isCutoutSupported) extendCutout else false,
+                            onCheckedChange = null,
+                            enabled = isCutoutSupported
                         )
                     }
 
@@ -2810,9 +3251,16 @@ fun InitialScreen(
 
     val appIconBitmap = remember(context) {
         val drawable = context.packageManager.getApplicationIcon(context.packageName)
+        val maxSide = 192
+        val rawW = drawable.intrinsicWidth.coerceAtLeast(1)
+        val rawH = drawable.intrinsicHeight.coerceAtLeast(1)
+        val scale = minOf(1f, maxSide.toFloat() / maxOf(rawW, rawH))
+        val targetW = (rawW * scale).roundToInt().coerceAtLeast(1)
+        val targetH = (rawH * scale).roundToInt().coerceAtLeast(1)
+
         val bitmap = android.graphics.Bitmap.createBitmap(
-            drawable.intrinsicWidth.coerceAtLeast(1),
-            drawable.intrinsicHeight.coerceAtLeast(1),
+            targetW,
+            targetH,
             android.graphics.Bitmap.Config.ARGB_8888
         )
         val canvas = android.graphics.Canvas(bitmap)
@@ -2840,35 +3288,41 @@ fun InitialScreen(
             val isLandscape = maxWidth > maxHeight
 
             if (isLandscape) {
-                // 橫向佈局
+                // 橫向佈局：左右欄位固定比例分配，避免長文字把右側擠扁
                 Row(
                     modifier = Modifier.fillMaxSize(),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceEvenly
+                    horizontalArrangement = Arrangement.spacedBy(24.dp)
                 ) {
                     Column(
+                        modifier = Modifier
+                            .weight(1.15f)
+                            .verticalScroll(rememberScrollState()),
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.Center
                     ) {
                         Image(
                             bitmap = appIconBitmap,
                             contentDescription = "App Icon",
-                            modifier = Modifier.size(88.dp)
+                            modifier = Modifier.size(80.dp)
                         )
 
-                        Spacer(modifier = Modifier.height(14.dp))
+                        Spacer(modifier = Modifier.height(12.dp))
 
                         Text(
                             text = stringResource(R.string.initial_prompt_fold),
                             color = Color.White,
-                            fontSize = 17.sp,
-                            lineHeight = 24.sp,
+                            fontSize = 16.sp,
+                            lineHeight = 22.sp,
                             fontWeight = FontWeight.SemiBold,
                             textAlign = TextAlign.Center
                         )
                     }
 
                     Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .verticalScroll(rememberScrollState()),
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.Center
                     ) {
@@ -2876,13 +3330,15 @@ fun InitialScreen(
                             onClick = onNotFoldableClick,
                             shape = RoundedCornerShape(14.dp),
                             color = Color(0xFF24242B),
-                            modifier = Modifier.padding(bottom = 12.dp)
+                            modifier = Modifier.padding(bottom = 8.dp)
                         ) {
                             Text(
                                 text = stringResource(R.string.btn_not_foldable),
                                 color = Color(0xFF81C7D4),
                                 fontSize = 11.5.sp,
                                 fontWeight = FontWeight.Medium,
+                                maxLines = 1,
+                                softWrap = false,
                                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp)
                             )
                         }
@@ -3045,16 +3501,6 @@ fun InitialScreen(
                     }
                 )
             }
-
-            if (showNonFoldableDialog) {
-                NonFoldableDialog(
-                    onDismiss = { showNonFoldableDialog = false },
-                    onAccept = {
-                        showNonFoldableDialog = false
-                        onEnterClockDirectly()
-                    }
-                )
-            }
         }
     }
 }
@@ -3071,7 +3517,7 @@ fun DeskClockScreen(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
-    val activity = context as? Activity
+    val activity = context.findActivity()
     val window = activity?.window
 
     val defaultCityStr = stringResource(R.string.city_default)
@@ -3081,6 +3527,14 @@ fun DeskClockScreen(
 
     var flipScreen180 by remember {
         mutableStateOf(prefs.getBoolean("pref_flip_screen_180", false))
+    }
+
+    var extendCutout by remember {
+        mutableStateOf(prefs.getBoolean("pref_extend_cutout", true))
+    }
+
+    LaunchedEffect(extendCutout) {
+        applyDisplayCutoutMode(window, extendCutout)
     }
 
     var updateInfo by remember { mutableStateOf<AppUpdateInfo?>(null) }
@@ -3112,7 +3566,6 @@ fun DeskClockScreen(
                 else -> ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
             }
         } else {
-            // 關閉反轉：恢復各機型的預設轉向邏輯 (直接在此判定品牌與長寬比，不依賴 MainActivity 私有變數)
             val m = Build.MANUFACTURER.lowercase()
             val b = Build.BRAND.lowercase()
             val isMoto = m.contains("motorola") || m.contains("lenovo") || b.contains("motorola") || b.contains("moto")
@@ -3122,7 +3575,7 @@ fun DeskClockScreen(
             val minDim = minOf(metrics.widthPixels, metrics.heightPixels).toFloat()
             val isTall = (maxDim / minDim) >= 2.05f
 
-            currentActivity.requestedOrientation = if (isMoto || isTall) {
+            currentActivity.requestedOrientation = if (!hasHingeSensor || isMoto || isTall) {
                 ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
             } else {
                 ActivityInfo.SCREEN_ORIENTATION_REVERSE_LANDSCAPE
@@ -3169,8 +3622,10 @@ fun DeskClockScreen(
     }
 
     var weatherEnabled by remember { mutableStateOf(prefs.getBoolean("pref_weather_enabled", false)) }
+    var locationTrigger by remember { mutableIntStateOf(0) }
     var isFahrenheit by remember { mutableStateOf(prefs.getBoolean("pref_is_fahrenheit", false)) }
     var weatherInfo by remember { mutableStateOf<WeatherInfo?>(null) }
+    var isWeatherRefreshing by remember { mutableStateOf(false) }
 
     var showCalendarEvents by remember {
         mutableStateOf(prefs.getBoolean("pref_show_calendar_events", false))
@@ -3188,7 +3643,7 @@ fun DeskClockScreen(
 
     var isUiLocked by rememberSaveable { mutableStateOf(false) }
 
-    LaunchedEffect(is24Hour, showBattery, showCornerDate, showHingeAngle, manualBrightness, brightnessValue, timeoutMillis, layoutMode, weatherEnabled, isFahrenheit, burnInProtectionEnabled, showCalendarEvents) {
+    LaunchedEffect(is24Hour, showBattery, showCornerDate, showHingeAngle, manualBrightness, brightnessValue, timeoutMillis, layoutMode, weatherEnabled, isFahrenheit, burnInProtectionEnabled, showCalendarEvents,flipScreen180,extendCutout) {
         prefs.edit()
             .putBoolean("pref_24_hour", is24Hour)
             .putBoolean("pref_show_battery", showBattery)
@@ -3203,6 +3658,7 @@ fun DeskClockScreen(
             .putBoolean("pref_burn_in_enabled", burnInProtectionEnabled)
             .putBoolean("pref_show_calendar_events", showCalendarEvents)
             .putBoolean("pref_flip_screen_180", flipScreen180)
+            .putBoolean("pref_extend_cutout", extendCutout)
             .apply()
     }
 
@@ -3242,7 +3698,12 @@ fun DeskClockScreen(
     ) { permissions ->
         val granted = permissions[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
                 permissions[Manifest.permission.ACCESS_COARSE_LOCATION] == true
-        weatherEnabled = granted
+        if (granted) {
+            weatherEnabled = true
+            locationTrigger++
+        } else {
+            weatherEnabled = false
+        }
     }
 
     val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
@@ -3256,7 +3717,10 @@ fun DeskClockScreen(
                 if ((hasFine || hasCoarse) && weatherEnabled && layoutMode != ClockLayoutMode.SINGLE && weatherInfo == null) {
                     CoroutineScope(Dispatchers.IO).launch {
                         fetchAndApplyWeather(context, currentLocationStr) { data ->
-                            weatherInfo = data
+                            if (data != null) {
+                                weatherInfo = data
+                            }
+                            isWeatherRefreshing = false
                         }
                     }
                 }
@@ -3269,7 +3733,7 @@ fun DeskClockScreen(
     }
 
     // 天氣更新：僅在雙區塊模式且功能開啟時在背景輪詢以省電
-    LaunchedEffect(weatherEnabled, layoutMode) {
+    LaunchedEffect(weatherEnabled, layoutMode, locationTrigger) {
         val isDualLayout = (layoutMode != ClockLayoutMode.SINGLE)
 
         if (weatherEnabled && isDualLayout) {
@@ -3278,9 +3742,12 @@ fun DeskClockScreen(
 
             if (hasFine || hasCoarse) {
                 while (true) {
+                    isWeatherRefreshing = true
                     fetchAndApplyWeather(context, currentLocationStr) { data ->
                         weatherInfo = data
+                        isWeatherRefreshing = false
                     }
+                    isWeatherRefreshing = false
                     delay(30 * 60 * 1000L)
                 }
             } else {
@@ -3378,6 +3845,13 @@ fun DeskClockScreen(
         modifier = modifier
             .fillMaxSize()
             .background(Color.Black)
+            .then(
+                if (!extendCutout) {
+                    Modifier.windowInsetsPadding(WindowInsets.displayCutout)
+                } else {
+                    Modifier
+                }
+            )
             .pointerInput(Unit) {
                 awaitPointerEventScope {
                     while (true) {
@@ -3395,6 +3869,34 @@ fun DeskClockScreen(
             }
             .checkerboardBurnInProtection(isIdle = isBurnInProtectionActive && burnInProtectionEnabled)
     ) {
+        val density = LocalDensity.current
+        val layoutDirection = LocalLayoutDirection.current
+        val cutoutInsets = WindowInsets.displayCutout
+
+        // 偵測關閉全螢幕延伸時，挖孔黑邊出現在左側還是右側
+        val hasLeftCutout = !extendCutout && cutoutInsets.getLeft(density, layoutDirection) > 0
+        val hasRightCutout = !extendCutout && cutoutInsets.getRight(density, layoutDirection) > 0
+
+        // 動態計算各區塊的圓角半徑
+        val singleShape = RoundedCornerShape(
+            topStart = if (hasLeftCutout) 24.dp else 0.dp,
+            bottomStart = if (hasLeftCutout) 24.dp else 0.dp,
+            topEnd = if (hasRightCutout) 24.dp else 0.dp,
+            bottomEnd = if (hasRightCutout) 24.dp else 0.dp
+        )
+        val leftPaneShape = RoundedCornerShape(
+            topStart = if (hasLeftCutout) 24.dp else 0.dp,
+            bottomStart = if (hasLeftCutout) 24.dp else 0.dp,
+            topEnd = 24.dp,
+            bottomEnd = 24.dp
+        )
+        val rightPaneShape = RoundedCornerShape(
+            topStart = 24.dp,
+            bottomStart = 24.dp,
+            topEnd = if (hasRightCutout) 24.dp else 0.dp,
+            bottomEnd = if (hasRightCutout) 24.dp else 0.dp
+        )
+
         when (layoutMode) {
             ClockLayoutMode.SINGLE -> {
                 MainClockSection(
@@ -3406,7 +3908,9 @@ fun DeskClockScreen(
                     showBattery = showBattery,
                     batteryState = batteryState,
                     isUiLocked = isUiLocked,
-                    modifier = Modifier.fillMaxSize()
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .clip(singleShape)
                 )
             }
             ClockLayoutMode.DUAL_LEFT_LARGE -> {
@@ -3419,7 +3923,7 @@ fun DeskClockScreen(
                             .fillMaxHeight()
                             .weight(0.70f)
                             .background(Color.Black)
-                            .clip(RoundedCornerShape(topStart = 0.dp, bottomStart = 0.dp, topEnd = 24.dp, bottomEnd = 24.dp))
+                            .clip(leftPaneShape)
                     ) {
                         MainClockSection(
                             state = mainPagerState,
@@ -3439,12 +3943,14 @@ fun DeskClockScreen(
                             .fillMaxHeight()
                             .weight(0.30f)
                             .background(Color.Black)
-                            .clip(RoundedCornerShape(topStart = 24.dp, bottomStart = 24.dp, topEnd = 0.dp, bottomEnd = 0.dp))
+                            .clip(rightPaneShape)
                     ) {
                         SideWidgetPager(
                             state = sidePagerState,
                             weatherEnabled = weatherEnabled,
                             weatherInfo = weatherInfo,
+                            isWeatherRefreshing = isWeatherRefreshing,
+                            onRefreshWeather = { locationTrigger++ },
                             isFahrenheit = isFahrenheit,
                             is24Hour = is24Hour,
                             isUiLocked = isUiLocked,
@@ -3464,12 +3970,14 @@ fun DeskClockScreen(
                             .fillMaxHeight()
                             .weight(0.30f)
                             .background(Color.Black)
-                            .clip(RoundedCornerShape(topStart = 0.dp, bottomStart = 0.dp, topEnd = 24.dp, bottomEnd = 24.dp))
+                            .clip(leftPaneShape)
                     ) {
                         SideWidgetPager(
                             state = sidePagerState,
                             weatherEnabled = weatherEnabled,
                             weatherInfo = weatherInfo,
+                            isWeatherRefreshing = isWeatherRefreshing,
+                            onRefreshWeather = { locationTrigger++ },
                             isFahrenheit = isFahrenheit,
                             is24Hour = is24Hour,
                             isUiLocked = isUiLocked,
@@ -3483,7 +3991,7 @@ fun DeskClockScreen(
                             .fillMaxHeight()
                             .weight(0.70f)
                             .background(Color.Black)
-                            .clip(RoundedCornerShape(topStart = 24.dp, bottomStart = 24.dp, topEnd = 0.dp, bottomEnd = 0.dp))
+                            .clip(rightPaneShape)
                     ) {
                         MainClockSection(
                             state = mainPagerState,
@@ -3543,9 +4051,8 @@ fun DeskClockScreen(
                     modifier = Modifier.size(46.dp)
                 ) {
                     Box(contentAlignment = Alignment.Center) {
-                        Text(
-                            text = "⚙",
-                            fontSize = 24.sp,
+                        MaterialSettingsIcon(
+                            modifier = Modifier.size(22.dp),
                             color = if (isUiLocked) Color(0xFF75757F) else Color.White
                         )
                     }
@@ -3573,7 +4080,15 @@ fun DeskClockScreen(
                 onShowHingeAngleChange = { showHingeAngle = it },
                 hasHingeSensor = hasHingeSensor,
                 flipScreen180 = flipScreen180,
-                onFlipScreen180Change = { flipScreen180 = it },
+                onFlipScreen180Change = {
+                    flipScreen180 = it
+                    prefs.edit().putBoolean("pref_flip_screen_180", it).apply()
+                },
+                extendCutout = extendCutout,
+                onExtendCutoutChange = {
+                    extendCutout = it
+                    prefs.edit().putBoolean("pref_extend_cutout", it).apply()
+                },
                 manualBrightness = manualBrightness,
                 onManualBrightnessChange = { manualBrightness = it },
                 brightnessValue = brightnessValue,
@@ -3748,6 +4263,8 @@ fun SideWidgetPager(
     state: PagerState,
     weatherEnabled: Boolean,
     weatherInfo: WeatherInfo?,
+    isWeatherRefreshing: Boolean = false,
+    onRefreshWeather: () -> Unit = {},
     isFahrenheit: Boolean,
     is24Hour: Boolean = false,
     isUiLocked: Boolean,
@@ -3764,6 +4281,12 @@ fun SideWidgetPager(
             1 -> SideWeatherWidget(
                 weatherEnabled = weatherEnabled,
                 weatherInfo = weatherInfo,
+                isRefreshing = isWeatherRefreshing,
+                onRefresh = {
+                    if (!isUiLocked && !isWeatherRefreshing) {
+                        onRefreshWeather()
+                    }
+                },
                 isFahrenheit = isFahrenheit,
                 is24Hour = is24Hour
             )
@@ -3784,8 +4307,9 @@ fun SideDateWidget(
 
     LaunchedEffect(Unit) {
         while (true) {
-            currentTime = System.currentTimeMillis()
-            delay(1000L)
+            val now = System.currentTimeMillis()
+            currentTime = now
+            delay(60_000L - (now % 60_000L))
         }
     }
 
@@ -3793,17 +4317,18 @@ fun SideDateWidget(
         Calendar.getInstance().apply { timeInMillis = currentTime }
     }
 
+    val dateObj = remember(currentTime) { Date(currentTime) }
     val dayOfWeekStr = remember(currentTime) {
-        SimpleDateFormat("EEE", Locale.US).format(Date(currentTime))
+        getCachedDateFormat("EEE", Locale.US).format(dateObj)
     }
     val monthShortStr = remember(currentTime) {
-        SimpleDateFormat("MMM", Locale.US).format(Date(currentTime))
+        getCachedDateFormat("MMM", Locale.US).format(dateObj)
     }
     val dayOfMonthStr = remember(currentTime) {
-        SimpleDateFormat("d", Locale.US).format(Date(currentTime))
+        getCachedDateFormat("d", Locale.US).format(dateObj)
     }
     val monthFullStr = remember(currentTime) {
-        SimpleDateFormat("MMMM", Locale.US).format(Date(currentTime)).uppercase(Locale.US)
+        getCachedDateFormat("MMMM", Locale.US).format(dateObj).uppercase(Locale.US)
     }
 
     val currentDay = calendar.get(Calendar.DAY_OF_MONTH)
@@ -4059,6 +4584,8 @@ fun SideDateWidget(
 fun SideWeatherWidget(
     weatherEnabled: Boolean,
     weatherInfo: WeatherInfo?,
+    isRefreshing: Boolean = false,
+    onRefresh: () -> Unit = {},
     isFahrenheit: Boolean,
     is24Hour: Boolean = false,
     modifier: Modifier = Modifier
@@ -4069,7 +4596,8 @@ fun SideWeatherWidget(
             .background(Color.Black)
             .padding(horizontal = 14.dp, vertical = 10.dp)
     ) {
-        if (!weatherEnabled || weatherInfo == null) {
+        if (!weatherEnabled) {
+            // 狀態 1：使用者尚未開啟天氣開關
             Column(
                 modifier = Modifier
                     .fillMaxSize()
@@ -4095,7 +4623,46 @@ fun SideWeatherWidget(
                     textAlign = TextAlign.Center
                 )
             }
+        } else if (weatherInfo == null) {
+            // 狀態 2：已開啟天氣開關，但因網路或定位尚未擷取到資料（點擊可手動重整）
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .clip(RoundedCornerShape(16.dp))
+                    .clickable(enabled = !isRefreshing) { onRefresh() }
+                    .padding(8.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center
+            ) {
+                Text(
+                    text = if (isRefreshing) "⏳" else "🔄",
+                    fontSize = 34.sp
+                )
+                Spacer(modifier = Modifier.height(12.dp))
+                Text(
+                    text = if (isRefreshing) {
+                        stringResource(R.string.weather_refreshing_title)
+                    } else {
+                        stringResource(R.string.weather_unavailable_title)
+                    },
+                    color = Color.White,
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    textAlign = TextAlign.Center
+                )
+                if (!isRefreshing) {
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = stringResource(R.string.weather_unavailable_desc),
+                        color = Color(0xFF81C7D4),
+                        fontSize = 11.sp,
+                        lineHeight = 16.sp,
+                        textAlign = TextAlign.Center
+                    )
+                }
+            }
         } else {
+            // 狀態 3：正常顯示天氣資料（保持原有內容不變）
             Column(modifier = Modifier.fillMaxSize()) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
@@ -4310,10 +4877,13 @@ fun DigitalClockFace(
         mutableStateOf(prefs.getBoolean("pref_digital_show_sec", false))
     }
 
-    LaunchedEffect(Unit) {
+    LaunchedEffect(showSeconds) {
         while (true) {
-            currentTime = System.currentTimeMillis()
-            delay(1000L)
+            val now = System.currentTimeMillis()
+            currentTime = now
+            val step = if (showSeconds) 1000L else 60_000L
+            val delayMillis = step - (now % step)
+            delay(delayMillis)
         }
     }
 
@@ -4324,7 +4894,7 @@ fun DigitalClockFace(
             !is24Hour && showSeconds -> "hh:mm:ss"
             else -> "hh:mm"
         }
-        SimpleDateFormat(pattern, Locale.US).format(Date(currentTime))
+        getCachedDateFormat(pattern, Locale.US).format(Date(currentTime))
     }
 
     val isAM = remember(currentTime) {
@@ -4332,25 +4902,18 @@ fun DigitalClockFace(
         cal.get(Calendar.AM_PM) == Calendar.AM
     }
 
-    val dateString = remember(currentTime) {
-        val locale = Locale.getDefault()
-        val isCjk = locale.language in listOf("zh", "ja")
-        if (isCjk) {
-            val weekStr = SimpleDateFormat("EEEE", locale).format(Date(currentTime))
-            val dateStr = SimpleDateFormat("M月d日", locale).format(Date(currentTime))
-            "$weekStr, $dateStr"
-        } else {
-            SimpleDateFormat("EEEE, MMMM d", locale).format(Date(currentTime))
-        }
+    val dateString = remember(currentTime, currentAppLocaleTag) {
+        formatCornerDate(currentTime, currentAppLocaleTag)
     }
 
     // 顯示秒數時稍微縮減水平邊距，給予字串更多排版寬度
-    val horizontalPad = if (showSeconds) 32.dp else 40.dp
+    val horizontalPad = 22.dp
 
     BoxWithConstraints(
         modifier = modifier
             .fillMaxSize()
             .background(Color.Black)
+            .windowInsetsPadding(WindowInsets.displayCutout)
             .padding(horizontal = horizontalPad, vertical = 20.dp)
             .pointerInput(availableStyles, isUiLocked) {
                 awaitPointerEventScope {
@@ -4409,18 +4972,17 @@ fun DigitalClockFace(
                 }
             }
     ) {
-        val heightBasedSize = maxHeight * 0.70f
+        val heightBasedSize = maxHeight * 0.74f
 
-        // 縮放係數微調：使字元等比收窄至安全區
+        val isWideFont = (currentStyle == "rafm")
         val widthDivider = when {
-            showSeconds && is24Hour -> 6.45f
-            showSeconds && !is24Hour -> 7.50f
-            !showSeconds && is24Hour -> 4.25f
-            else -> 4.95f
+            showSeconds && is24Hour -> if (isWideFont) 6.35f else 5.90f
+            showSeconds && !is24Hour -> if (isWideFont) 7.45f else 6.85f
+            !showSeconds && is24Hour -> if (isWideFont) 4.15f else 3.85f
+            else -> if (isWideFont) 4.85f else 4.50f
         }
 
-        // 預留額外 16.dp 安全緩衝，確保左右兩端不貼邊
-        val availableWidth = (maxWidth - 16.dp).coerceAtLeast(0.dp)
+        val availableWidth = (maxWidth - 12.dp).coerceAtLeast(0.dp)
         val calculatedHeight = availableWidth / widthDivider
         val finalDigitHeight = min(heightBasedSize, calculatedHeight)
 
@@ -4496,7 +5058,7 @@ fun DigitalClockFace(
                 fontWeight = FontWeight.Medium,
                 modifier = Modifier
                     .align(Alignment.BottomStart)
-                    .padding(bottom = 8.dp)
+                    .padding(start = 10.dp, bottom = 8.dp)
             )
         }
 
@@ -4508,7 +5070,7 @@ fun DigitalClockFace(
                 fontWeight = FontWeight.Normal,
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
-                    .padding(bottom = 8.dp)
+                    .padding(end = 10.dp, bottom = 8.dp)
             )
         }
     }
@@ -4535,25 +5097,42 @@ fun AnalogClockFace(
         mutableStateOf(prefs.getBoolean("pref_analog_show_sec", true))
     }
 
-    val painterAbw12 = painterResource(id = R.drawable.abw_12)
-    val painterAbw6 = painterResource(id = R.drawable.abw_6)
-    val painterAbw3 = painterResource(id = R.drawable.abw_3)
-    val painterAbw9 = painterResource(id = R.drawable.abw_9)
+// 👉 1. 僅載入當前選中錶盤的 4 張數字圖，節省 2/3 向量快取記憶體
+    val (res12, res6, res3, res9) = remember(analogStyleIndex) {
+        when (analogStyleIndex) {
+            0 -> listOf(R.drawable.abw_12, R.drawable.abw_6, R.drawable.abw_3, R.drawable.abw_9)
+            1 -> listOf(R.drawable.oet_12, R.drawable.oet_6, R.drawable.oet_3, R.drawable.oet_9)
+            else -> listOf(R.drawable.zmg_12, R.drawable.zmg_6, R.drawable.zmg_3, R.drawable.zmg_9)
+        }
+    }
+    val painter12 = painterResource(id = res12)
+    val painter6 = painterResource(id = res6)
+    val painter3 = painterResource(id = res3)
+    val painter9 = painterResource(id = res9)
 
-    val painterOet12 = painterResource(id = R.drawable.oet_12)
-    val painterOet6 = painterResource(id = R.drawable.oet_6)
-    val painterOet3 = painterResource(id = R.drawable.oet_3)
-    val painterOet9 = painterResource(id = R.drawable.oet_9)
+    // 👉 2. 預先計算第 3 款錶盤（Squircle 超橢圓）60 個刻度單位方向向量，避免每次重繪重複執行 180 次 Math.pow
+    val squircleUnitPoints = remember {
+        val exp = 3.6
+        List(60) { i ->
+            val rad = (i * 6f - 90f) * (PI / 180.0)
+            val cosA = cos(rad)
+            val sinA = sin(rad)
+            val denom = Math.pow(
+                Math.pow(Math.abs(cosA), exp) + Math.pow(Math.abs(sinA), exp),
+                1.0 / exp
+            )
+            val factor = if (denom > 0.001) (1.0 / denom).toFloat() else 1f
+            Offset((cosA * factor).toFloat(), (sinA * factor).toFloat())
+        }
+    }
 
-    val painterZmg12 = painterResource(id = R.drawable.zmg_12)
-    val painterZmg6 = painterResource(id = R.drawable.zmg_6)
-    val painterZmg3 = painterResource(id = R.drawable.zmg_3)
-    val painterZmg9 = painterResource(id = R.drawable.zmg_9)
-
-    LaunchedEffect(Unit) {
+    LaunchedEffect(showSeconds) {
         while (true) {
-            currentTime = System.currentTimeMillis()
-            delay(1000L)
+            val now = System.currentTimeMillis()
+            currentTime = now
+            val step = if (showSeconds) 1000L else 60_000L
+            val delayMillis = step - (now % step)
+            delay(delayMillis)
         }
     }
 
@@ -4563,16 +5142,8 @@ fun AnalogClockFace(
     val hours = calendar.get(Calendar.HOUR)
     val minutes = calendar.get(Calendar.MINUTE)
     val seconds = calendar.get(Calendar.SECOND)
-    val dateString = remember(currentTime) {
-        val locale = Locale.getDefault()
-        val isCjk = locale.language in listOf("zh", "ja")
-        if (isCjk) {
-            val weekStr = SimpleDateFormat("EEEE", locale).format(Date(currentTime))
-            val dateStr = SimpleDateFormat("M月d日", locale).format(Date(currentTime))
-            "$weekStr, $dateStr"
-        } else {
-            SimpleDateFormat("EEEE, MMMM d", locale).format(Date(currentTime))
-        }
+    val dateString = remember(currentTime, currentAppLocaleTag) {
+        formatCornerDate(currentTime, currentAppLocaleTag)
     }
 
     val currentBgColor = when (analogStyleIndex) {
@@ -4685,32 +5256,32 @@ fun AnalogClockFace(
 
                     val digitHeight = (minOf(width, height) * 0.16f).coerceIn(38.dp.toPx(), 54.dp.toPx())
 
-                    val aspect12 = if (painterAbw12.intrinsicSize.height > 0) painterAbw12.intrinsicSize.width / painterAbw12.intrinsicSize.height else 0.80f
+                    val aspect12 = if (painter12.intrinsicSize.height > 0) painter12.intrinsicSize.width / painter12.intrinsicSize.height else 0.80f
                     val w12 = digitHeight * aspect12
                     val y12 = 32.dp.toPx() + 8.dp.toPx() + digitHeight / 2f
                     translate(left = cx - w12 / 2f, top = y12 - digitHeight / 2f) {
-                        with(painterAbw12) { draw(size = Size(w12, digitHeight)) }
+                        with(painter12) { draw(size = Size(w12, digitHeight)) }
                     }
 
-                    val aspect6 = if (painterAbw6.intrinsicSize.height > 0) painterAbw6.intrinsicSize.width / painterAbw6.intrinsicSize.height else 0.65f
+                    val aspect6 = if (painter6.intrinsicSize.height > 0) painter6.intrinsicSize.width / painter6.intrinsicSize.height else 0.65f
                     val w6 = digitHeight * aspect6
                     val y6 = height - (32.dp.toPx() + 8.dp.toPx() + digitHeight / 2f)
                     translate(left = cx - w6 / 2f, top = y6 - digitHeight / 2f) {
-                        with(painterAbw6) { draw(size = Size(w6, digitHeight)) }
+                        with(painter6) { draw(size = Size(w6, digitHeight)) }
                     }
 
-                    val aspect9 = if (painterAbw9.intrinsicSize.height > 0) painterAbw9.intrinsicSize.width / painterAbw9.intrinsicSize.height else 0.65f
+                    val aspect9 = if (painter9.intrinsicSize.height > 0) painter9.intrinsicSize.width / painter9.intrinsicSize.height else 0.65f
                     val w9 = digitHeight * aspect9
                     val x9 = 32.dp.toPx() + 8.dp.toPx() + w9 / 2f
                     translate(left = x9 - w9 / 2f, top = cy - digitHeight / 2f) {
-                        with(painterAbw9) { draw(size = Size(w9, digitHeight)) }
+                        with(painter9) { draw(size = Size(w9, digitHeight)) }
                     }
 
-                    val aspect3 = if (painterAbw3.intrinsicSize.height > 0) painterAbw3.intrinsicSize.width / painterAbw3.intrinsicSize.height else 0.65f
+                    val aspect3 = if (painter3.intrinsicSize.height > 0) painter3.intrinsicSize.width / painter3.intrinsicSize.height else 0.65f
                     val w3 = digitHeight * aspect3
                     val x3 = width - (32.dp.toPx() + 8.dp.toPx() + w3 / 2f)
                     translate(left = x3 - w3 / 2f, top = cy - digitHeight / 2f) {
-                        with(painterAbw3) { draw(size = Size(w3, digitHeight)) }
+                        with(painter3) { draw(size = Size(w3, digitHeight)) }
                     }
 
                     val hourRad = (hourAngleDeg * (PI / 180f)).toFloat()
@@ -4812,38 +5383,38 @@ fun AnalogClockFace(
                     val digitHeight = (baseRadius * 0.30f).coerceIn(40.dp.toPx(), 62.dp.toPx())
                     val numberOffsetR = innerTrackR * 0.76f
 
-                    val aspect12 = if (painterOet12.intrinsicSize.height > 0) painterOet12.intrinsicSize.width / painterOet12.intrinsicSize.height else 0.85f
+                    val aspect12 = if (painter12.intrinsicSize.height > 0) painter12.intrinsicSize.width / painter12.intrinsicSize.height else 0.85f
                     val w12 = digitHeight * aspect12
                     val y12 = cy - numberOffsetR
                     translate(left = cx - w12 / 2f, top = y12 - digitHeight / 2f) {
-                        with(painterOet12) {
+                        with(painter12) {
                             draw(size = Size(w12, digitHeight), colorFilter = ColorFilter.tint(vintageGold))
                         }
                     }
 
-                    val aspect6 = if (painterOet6.intrinsicSize.height > 0) painterOet6.intrinsicSize.width / painterOet6.intrinsicSize.height else 0.65f
+                    val aspect6 = if (painter6.intrinsicSize.height > 0) painter6.intrinsicSize.width / painter6.intrinsicSize.height else 0.65f
                     val w6 = digitHeight * aspect6
                     val y6 = cy + numberOffsetR
                     translate(left = cx - w6 / 2f, top = y6 - digitHeight / 2f) {
-                        with(painterOet6) {
+                        with(painter6) {
                             draw(size = Size(w6, digitHeight), colorFilter = ColorFilter.tint(vintageGold))
                         }
                     }
 
-                    val aspect9 = if (painterOet9.intrinsicSize.height > 0) painterOet9.intrinsicSize.width / painterOet9.intrinsicSize.height else 0.65f
+                    val aspect9 = if (painter9.intrinsicSize.height > 0) painter9.intrinsicSize.width / painter9.intrinsicSize.height else 0.65f
                     val w9 = digitHeight * aspect9
                     val x9 = cx - numberOffsetR
                     translate(left = x9 - w9 / 2f, top = cy - digitHeight / 2f) {
-                        with(painterOet9) {
+                        with(painter9) {
                             draw(size = Size(w9, digitHeight), colorFilter = ColorFilter.tint(vintageGold))
                         }
                     }
 
-                    val aspect3 = if (painterOet3.intrinsicSize.height > 0) painterOet3.intrinsicSize.width / painterOet3.intrinsicSize.height else 0.65f
+                    val aspect3 = if (painter3.intrinsicSize.height > 0) painter3.intrinsicSize.width / painter3.intrinsicSize.height else 0.65f
                     val w3 = digitHeight * aspect3
                     val x3 = cx + numberOffsetR
                     translate(left = x3 - w3 / 2f, top = cy - digitHeight / 2f) {
-                        with(painterOet3) {
+                        with(painter3) {
                             draw(size = Size(w3, digitHeight), colorFilter = ColorFilter.tint(vintageGold))
                         }
                     }
@@ -4928,23 +5499,11 @@ fun AnalogClockFace(
                     val dotMinor = Color(0xFF4A403A)
 
                     val baseTrackR = baseRadius * 0.86f
-                    val squircleExponent = 3.6f
 
                     for (i in 0 until 60) {
-                        val angleDeg = i * 6f - 90f
-                        val angleRad = (angleDeg * (PI / 180f)).toFloat()
-                        val cosA = cos(angleRad)
-                        val sinA = sin(angleRad)
-
-                        val denominator = Math.pow(
-                            Math.pow(Math.abs(cosA.toDouble()), squircleExponent.toDouble()) +
-                                    Math.pow(Math.abs(sinA.toDouble()), squircleExponent.toDouble()),
-                            1.0 / squircleExponent
-                        ).toFloat()
-
-                        val squircleR = if (denominator > 0.001f) (baseTrackR / denominator) else baseTrackR
-                        val px = cx + squircleR * cosA
-                        val py = cy + squircleR * sinA
+                        val unitPt = squircleUnitPoints[i]
+                        val px = cx + baseTrackR * unitPt.x
+                        val py = cy + baseTrackR * unitPt.y
 
                         if (i % 5 == 0) {
                             drawCircle(
@@ -4964,38 +5523,38 @@ fun AnalogClockFace(
                     val digitHeight = (baseRadius * 0.28f).coerceIn(38.dp.toPx(), 58.dp.toPx())
                     val numberOffsetR = baseTrackR * 0.74f
 
-                    val aspect12 = if (painterZmg12.intrinsicSize.height > 0) painterZmg12.intrinsicSize.width / painterZmg12.intrinsicSize.height else 0.80f
+                    val aspect12 = if (painter12.intrinsicSize.height > 0) painter12.intrinsicSize.width / painter12.intrinsicSize.height else 0.80f
                     val w12 = digitHeight * aspect12
                     val y12 = cy - numberOffsetR
                     translate(left = cx - w12 / 2f, top = y12 - digitHeight / 2f) {
-                        with(painterZmg12) {
+                        with(painter12) {
                             draw(size = Size(w12, digitHeight), colorFilter = ColorFilter.tint(color12))
                         }
                     }
 
-                    val aspect6 = if (painterZmg6.intrinsicSize.height > 0) painterZmg6.intrinsicSize.width / painterZmg6.intrinsicSize.height else 0.65f
+                    val aspect6 = if (painter6.intrinsicSize.height > 0) painter6.intrinsicSize.width / painter6.intrinsicSize.height else 0.65f
                     val w6 = digitHeight * aspect6
                     val y6 = cy + numberOffsetR
                     translate(left = cx - w6 / 2f, top = y6 - digitHeight / 2f) {
-                        with(painterZmg6) {
+                        with(painter6) {
                             draw(size = Size(w6, digitHeight), colorFilter = ColorFilter.tint(color6))
                         }
                     }
 
-                    val aspect9 = if (painterZmg9.intrinsicSize.height > 0) painterZmg9.intrinsicSize.width / painterZmg9.intrinsicSize.height else 0.65f
+                    val aspect9 = if (painter9.intrinsicSize.height > 0) painter9.intrinsicSize.width / painter9.intrinsicSize.height else 0.65f
                     val w9 = digitHeight * aspect9
                     val x9 = cx - numberOffsetR
                     translate(left = x9 - w9 / 2f, top = cy - digitHeight / 2f) {
-                        with(painterZmg9) {
+                        with(painter9) {
                             draw(size = Size(w9, digitHeight), colorFilter = ColorFilter.tint(color9))
                         }
                     }
 
-                    val aspect3 = if (painterZmg3.intrinsicSize.height > 0) painterZmg3.intrinsicSize.width / painterZmg3.intrinsicSize.height else 0.65f
+                    val aspect3 = if (painter3.intrinsicSize.height > 0) painter3.intrinsicSize.width / painter3.intrinsicSize.height else 0.65f
                     val w3 = digitHeight * aspect3
                     val x3 = cx + numberOffsetR
                     translate(left = x3 - w3 / 2f, top = cy - digitHeight / 2f) {
-                        with(painterZmg3) {
+                        with(painter3) {
                             draw(size = Size(w3, digitHeight), colorFilter = ColorFilter.tint(color3))
                         }
                     }
@@ -5311,44 +5870,41 @@ fun FlipClockFace(
         mutableStateOf(prefs.getBoolean("pref_flip_show_sec", false))
     }
 
-    LaunchedEffect(Unit) {
+    LaunchedEffect(showSeconds) {
         while (true) {
-            currentTime = System.currentTimeMillis()
-            delay(1000L)
+            val now = System.currentTimeMillis()
+            currentTime = now
+            val step = if (showSeconds) 1000L else 60_000L
+            val delayMillis = step - (now % step)
+            delay(delayMillis)
         }
     }
 
     val hourPattern = if (is24Hour) "HH" else "hh"
+    val flipDateObj = remember(currentTime) { Date(currentTime) }
     val hourString = remember(currentTime, is24Hour) {
-        SimpleDateFormat(hourPattern, Locale.US).format(Date(currentTime))
+        getCachedDateFormat(hourPattern, Locale.US).format(flipDateObj)
     }
     val minString = remember(currentTime) {
-        SimpleDateFormat("mm", Locale.US).format(Date(currentTime))
+        getCachedDateFormat("mm", Locale.US).format(flipDateObj)
     }
     val secString = remember(currentTime) {
-        SimpleDateFormat("ss", Locale.US).format(Date(currentTime))
+        getCachedDateFormat("ss", Locale.US).format(flipDateObj)
     }
     val isAM = remember(currentTime) {
         val cal = Calendar.getInstance().apply { timeInMillis = currentTime }
         cal.get(Calendar.AM_PM) == Calendar.AM
     }
-    val dateString = remember(currentTime) {
-        val locale = Locale.getDefault()
-        val isCjk = locale.language in listOf("zh", "ja")
-        if (isCjk) {
-            val weekStr = SimpleDateFormat("EEEE", locale).format(Date(currentTime))
-            val dateStr = SimpleDateFormat("M月d日", locale).format(Date(currentTime))
-            "$weekStr, $dateStr"
-        } else {
-            SimpleDateFormat("EEEE, MMMM d", locale).format(Date(currentTime))
-        }
+    val dateString = remember(currentTime, currentAppLocaleTag) {
+        formatCornerDate(currentTime, currentAppLocaleTag)
     }
 
     BoxWithConstraints(
         modifier = modifier
             .fillMaxSize()
             .background(Color.Black)
-            .padding(horizontal = 36.dp, vertical = 14.dp)
+            .windowInsetsPadding(WindowInsets.displayCutout)
+            .padding(horizontal = 22.dp, vertical = 14.dp)
             .pointerInput(availableStyles, isUiLocked) {
                 awaitPointerEventScope {
                     var lastSingleTapTime = 0L
@@ -5406,16 +5962,16 @@ fun FlipClockFace(
                 }
             }
     ) {
-        val targetWidth = maxWidth * 0.78f
+        val targetWidth = maxWidth * 0.88f
 
         val widthDivider = if (showSeconds) {
-            if (is24Hour) 5.25f else 5.75f
+            if (is24Hour) 5.15f else 5.75f
         } else {
-            if (is24Hour) 3.35f else 3.85f
+            if (is24Hour) 3.25f else 3.85f
         }
 
         val calculatedCardHeight = targetWidth / widthDivider
-        val finalCardHeight = min(calculatedCardHeight, maxHeight * 0.82f)
+        val finalCardHeight = min(calculatedCardHeight, maxHeight * 0.83f)
 
         val animatedCardHeight by animateDpAsState(
             targetValue = finalCardHeight,
@@ -5488,7 +6044,7 @@ fun FlipClockFace(
                 fontWeight = FontWeight.Medium,
                 modifier = Modifier
                     .align(Alignment.BottomStart)
-                    .padding(start = 24.dp, bottom = 10.dp)
+                    .padding(start = 10.dp, bottom = 10.dp)
             )
         }
 
@@ -5500,7 +6056,7 @@ fun FlipClockFace(
                 fontWeight = FontWeight.Normal,
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
-                    .padding(end = 24.dp, bottom = 10.dp)
+                    .padding(end = 10.dp, bottom = 10.dp)
             )
         }
     }
@@ -5625,13 +6181,10 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     override fun onCreate(savedInstanceState: Bundle?) {
         val savedLang = getSharedPreferences("desk_clock_prefs", Context.MODE_PRIVATE)
             .getString("pref_app_language", "system") ?: "system"
-        currentAppLocaleTag = savedLang // 👈 初始化目前語言 State
+        currentAppLocaleTag = savedLang
 
-        if (savedLang != "system") {
-            val locale = Locale.forLanguageTag(savedLang)
-            Locale.setDefault(locale)
-            AppCompatDelegate.setApplicationLocales(LocaleListCompat.forLanguageTags(savedLang))
-        }
+        updateActivityResourcesLocale(this, savedLang)
+
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
@@ -5640,16 +6193,10 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         window.statusBarColor = AndroidGraphicsColor.BLACK
         window.navigationBarColor = AndroidGraphicsColor.BLACK
 
-        // 允許畫面延伸至挖孔/瀏海區域
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-            window.attributes = window.attributes.apply {
-                layoutInDisplayCutoutMode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                    WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
-                } else {
-                    WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
-                }
-            }
-        }
+        // 依據使用者設定決定是否延伸至挖孔/瀏海區域（預設 true）
+        val extendCutoutPref = getSharedPreferences("desk_clock_prefs", Context.MODE_PRIVATE)
+            .getBoolean("pref_extend_cutout", true)
+        applyDisplayCutoutMode(window, extendCutoutPref)
 
         sensorManager = getSystemService(SENSOR_SERVICE) as SensorManager
         hingeAngleSensor = sensorManager.getDefaultSensor(Sensor.TYPE_HINGE_ANGLE)
@@ -5667,28 +6214,52 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         }
 
         setContent {
-            val baseConfig = androidx.compose.ui.platform.LocalConfiguration.current
+            val baseContext = LocalContext.current
+            val baseConfig = LocalConfiguration.current
 
+            // 依據目前語言與最新螢幕方向 (baseConfig) 建立獨立的 Configuration
             val localizedConfig = remember(currentAppLocaleTag, baseConfig) {
-                val config = android.content.res.Configuration(baseConfig)
                 val targetLocale = if (currentAppLocaleTag == "system") {
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                        android.content.res.Resources.getSystem().configuration.locales[0]
-                    } else {
-                        @Suppress("DEPRECATION")
-                        android.content.res.Resources.getSystem().configuration.locale
-                    }
+                    getSystemDefaultLocale()
                 } else {
                     Locale.forLanguageTag(currentAppLocaleTag)
                 }
-                config.setLocale(targetLocale)
-                config
+                android.content.res.Configuration(baseConfig).apply {
+                    setLocale(targetLocale)
+                }
             }
 
+            // 建立擁有獨立 Resources 且保留 Activity 連結的 ContextWrapper
+            val localizedContext = remember(baseContext, localizedConfig) {
+                val configContext = baseContext.createConfigurationContext(localizedConfig)
+                object : ContextWrapper(baseContext) {
+                    override fun getResources(): android.content.res.Resources {
+                        return configContext.resources
+                    }
+                }
+            }
+
+            val baseDensity = LocalDensity.current
+            val clampedDensity = remember(baseDensity) {
+                androidx.compose.ui.unit.Density(
+                    density = baseDensity.density,
+                    fontScale = baseDensity.fontScale.coerceAtMost(1.15f)
+                )
+            }
+
+            // 同時提供隔離後的 Context、Configuration 與字體縮放上限保護
             CompositionLocalProvider(
-                androidx.compose.ui.platform.LocalConfiguration provides localizedConfig
+                LocalContext provides localizedContext,
+                LocalConfiguration provides localizedConfig,
+                LocalDensity provides clampedDensity
             ) {
                 MaterialTheme(colorScheme = DeskClockColorScheme) {
+                    val appPrefs = remember { getSharedPreferences("desk_clock_prefs", Context.MODE_PRIVATE) }
+                    var showLegacyAndroidDialog by remember {
+                        val isLegacy = Build.VERSION.SDK_INT <= Build.VERSION_CODES.S_V2
+                        val dismissed = appPrefs.getBoolean("pref_dismiss_legacy_android_notice", false)
+                        mutableStateOf(isLegacy && !dismissed)
+                    }
                     BackHandler(enabled = showClockScreen) {
                         val prefs = getSharedPreferences("desk_clock_prefs", Context.MODE_PRIVATE)
                         val bypassCount = prefs.getInt("pref_non_fold_bypass_count", 0)
@@ -5705,6 +6276,15 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                         }
                     }
 
+                    if (showLegacyAndroidDialog) {
+                        LegacyAndroidNoticeDialog(
+                            onDismiss = {
+                                showLegacyAndroidDialog = false
+                                appPrefs.edit().putBoolean("pref_dismiss_legacy_android_notice", true).apply()
+                            }
+                        )
+                    }
+
                     if (showClockScreen) {
                         DeskClockScreen(
                             foldState = foldState,
@@ -5712,7 +6292,8 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                             hasHingeSensor = hasHingeSensor
                         )
                     } else {
-                        val isClamshellDevice = hasHingeSensor && isTallAspectRatio()
+                        val isFoldedShut = lastRecordedHingeAngle in 0f..45f
+                        val isClamshellDevice = hasHingeSensor && isTallAspectRatio() && !isFoldedShut
                         val isOpenedWide = lastRecordedHingeAngle >= 160f || lastRecordedHingeAngle < 0f
 
                         InitialScreen(
@@ -5731,8 +6312,21 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         }
     }
 
+    override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
+        if (currentAppLocaleTag != "system") {
+            val targetLocale = Locale.forLanguageTag(currentAppLocaleTag)
+            Locale.setDefault(targetLocale)
+            newConfig.setLocale(targetLocale)
+            updateActivityResourcesLocale(this, currentAppLocaleTag)
+        }
+        super.onConfigurationChanged(newConfig)
+    }
+
     override fun onResume() {
         super.onResume()
+        if (currentAppLocaleTag != "system") {
+            updateActivityResourcesLocale(this, currentAppLocaleTag)
+        }
         hingeAngleSensor?.let {
             sensorManager.unregisterListener(this)
             sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_UI)

@@ -11,10 +11,10 @@ android {
 
     defaultConfig {
         applicationId = "com.linzin.linzindeskclock"
-        minSdk = 31
+        minSdk = 21
         targetSdk = 37
         versionCode = 1
-        versionName = "1.0.3"
+        versionName = "1.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -36,6 +36,10 @@ android {
     buildFeatures {
         compose = true
     }
+
+    lint {
+        disable += "UnusedBoxWithConstraintsScope"
+    }
 }
 
 dependencies {
@@ -54,6 +58,17 @@ dependencies {
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation(libs.androidx.junit)
+    debugImplementation(platform(libs.androidx.compose.bom))
     debugImplementation(libs.androidx.compose.ui.test.manifest)
     debugImplementation(libs.androidx.compose.ui.tooling)
+}
+
+configurations.all {
+    resolutionStrategy.eachDependency {
+        if (requested.group.startsWith("androidx.compose.") &&
+            requested.group != "androidx.compose.material3"
+        ) {
+            useVersion("1.7.8")
+        }
+    }
 }
