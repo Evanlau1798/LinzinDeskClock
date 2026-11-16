@@ -14,7 +14,8 @@ data class WeatherInfo(
     val currentWeatherCode: Int,
     val hourlyList: List<HourlyWeather>,
     val fetchedAtMillis: Long = System.currentTimeMillis(),
-    val isStale: Boolean = false
+    val isStale: Boolean = false,
+    val location: WeatherLocation? = null
 )
 
 internal fun weatherAfterRefresh(previous: WeatherInfo?, incoming: WeatherInfo?): WeatherInfo? =
