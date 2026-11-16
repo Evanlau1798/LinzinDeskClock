@@ -175,4 +175,3 @@ private fun readCalendarEvents(
 
     return eventList
 }
-
