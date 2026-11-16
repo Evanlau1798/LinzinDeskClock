@@ -10,6 +10,11 @@ import java.net.URL
 import java.net.URLConnection
 import java.net.URLStreamHandler
 import java.util.Collections
+import java.util.Date
+import java.util.Locale
+import java.util.SimpleTimeZone
+import java.util.TimeZone
+import java.text.SimpleDateFormat
 import javax.net.ssl.SSLHandshakeException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
@@ -17,6 +22,8 @@ import org.junit.Assert.*
 import org.junit.Before
 import org.junit.BeforeClass
 import org.junit.Test
+import org.json.JSONArray
+import org.json.JSONObject
 
 class WeatherTransportTest {
     companion object {
@@ -26,6 +33,7 @@ class WeatherTransportTest {
         private var fixtureStatusCode = 200
         private var redirect: String? = null
         private var disconnects = 0
+        private var weatherResponse: ((URL) -> String)? = null
 
         @BeforeClass @JvmStatic
         fun interceptNetworkInThisInstrumentationProcess() {
@@ -45,7 +53,7 @@ class WeatherTransportTest {
                                 val body = when (url.host) {
                                     "ip-api.com" -> """{"status":"fail"}"""
                                     "api.bigdatacloud.net" -> """{"city":"Fixture City"}"""
-                                    else -> """{"current":{"temperature_2m":21,"weather_code":0},"hourly":{"time":[],"temperature_2m":[],"weather_code":[]}}"""
+                                    else -> weatherResponse?.invoke(url) ?: """{"timezone":"UTC","current":{"temperature_2m":21,"weather_code":0},"hourly":{"time":[],"temperature_2m":[],"weather_code":[]}}"""
                                 }
                                 return ByteArrayInputStream(body.toByteArray())
                             }
@@ -64,6 +72,7 @@ class WeatherTransportTest {
         fixtureStatusCode = 200
         redirect = null
         disconnects = 0
+        weatherResponse = null
     }
 
     @Test
@@ -175,6 +184,149 @@ class WeatherTransportTest {
         assertEquals(21f, result!!.currentTempC)
         assertTrue(requests.any { it.host == "api.open-meteo.com" })
     }
+
+    @Test
+    fun forecastContinuesAcrossMidnightAndMonthEnd() = runBlocking {
+        assertNightForecast("2026-01-30 16:00")
+    }
+
+    @Test
+    fun forecastContinuesAcrossTheYearBoundary() = runBlocking {
+        assertNightForecast("2026-12-30 16:00")
+    }
+
+    @Test
+    fun forecastUsesTheServiceZoneInsteadOfTheDeviceZone() = runBlocking<Unit> {
+        val start = utc("2026-11-15 16:00")
+        val rows = (0 until 48).map { start + it * 3_600_000L }
+        assertForecast(rows, start + 12 * 3_600_000L + 600_000L, "Asia/Taipei", "UTC", rows.subList(12, 16))
+    }
+
+    @Test
+    fun forecastNeverPadsShortResponsesWithThePast() = runBlocking<Unit> {
+        val start = utc("2026-11-15 16:00")
+        val rows = listOf(start, start + 23 * 3_600_000L)
+        assertForecast(rows, start + 23 * 3_600_000L + 600_000L, "Asia/Taipei", "Asia/Taipei", rows.takeLast(1))
+    }
+
+    @Test
+    fun forecastSortsTheFullTimeline() = runBlocking<Unit> {
+        val start = utc("2026-11-15 16:00")
+        val rows = listOf(26, 23, 24, 0, 25).map { start + it * 3_600_000L }
+        val expected = listOf(23, 24, 25, 26).map { start + it * 3_600_000L }
+        assertForecast(rows, start + 23 * 3_600_000L + 600_000L, "Asia/Taipei", "Asia/Taipei", expected)
+    }
+
+    @Test
+    fun ordinaryDaytimeForecastIsUnchanged() = runBlocking<Unit> {
+        val start = utc("2026-11-15 16:00")
+        val rows = (0 until 48).map { start + it * 3_600_000L }
+        assertForecast(rows, start + 12 * 3_600_000L + 600_000L, "Asia/Taipei", "Asia/Taipei", rows.subList(12, 16))
+    }
+
+    @Test
+    fun forecastAcceptsKyivAndPreservesTheSourceId() = runBlocking {
+        val start = utc("2026-01-15 11:00")
+        val rows = (0 until 6).map { start + it * 3_600_000L }
+        val result = assertForecast(rows, utc("2026-01-15 12:10"), "Europe/Kyiv", "UTC",
+            rows.subList(1, 5), sourceOffsetMillis = 7_200_000)
+        assertEquals(listOf(14, 15, 16, 17), result.map { it.hourOfDay })
+    }
+
+    @Test
+    fun forecastAcceptsNuukAndUsesItsCurrentRules() = runBlocking {
+        val start = utc("2026-01-15 11:00")
+        val rows = (0 until 6).map { start + it * 3_600_000L }
+        val result = assertForecast(rows, utc("2026-01-15 12:10"), "America/Nuuk", "UTC",
+            rows.subList(1, 5), sourceOffsetMillis = -7_200_000)
+        assertEquals(listOf(10, 11, 12, 13), result.map { it.hourOfDay })
+    }
+
+    @Test
+    fun malformedForecastDataRemainsUnavailable() = runBlocking {
+        val valid = """{"timezone":"UTC","current":{"temperature_2m":21,"weather_code":0},"hourly":{"time":[0],"temperature_2m":[21],"weather_code":[0]}}"""
+        val invalid = listOf(
+            JSONObject(valid).put("timezone", "Invalid/Fixture"),
+            JSONObject(valid).apply {
+                getJSONObject("hourly").put("time", JSONArray().put(Long.MAX_VALUE))
+            },
+            JSONObject(valid).apply {
+                getJSONObject("hourly").put("temperature_2m", JSONArray())
+            },
+            JSONObject(valid).apply {
+                getJSONObject("hourly").put("temperature_2m", JSONArray().put("NaN"))
+            }
+        )
+        invalid.forEachIndexed { index, body ->
+            weatherResponse = { body.toString() }
+            assertNull("Malformed fixture $index", fetchOpenMeteoWeather(25.0, 121.0, "Fixture City"))
+        }
+    }
+
+    @Test
+    fun forecastPreservesBothRepeatedDstHours() = runBlocking {
+        val start = utc("2026-11-01 04:00")
+        val rows = (0 until 6).map { start + it * 3_600_000L }
+        val result = assertForecast(rows, utc("2026-11-01 05:10"), "America/New_York", "America/New_York", rows.subList(1, 5))
+        assertEquals(listOf(1, 1, 2, 3), result.map { it.hourOfDay })
+    }
+
+    @Test
+    fun forecastSkipsTheMissingDstHour() = runBlocking {
+        val start = utc("2026-03-08 05:00")
+        val rows = (0 until 6).map { start + it * 3_600_000L }
+        val result = assertForecast(rows, utc("2026-03-08 06:10"), "America/New_York", "America/New_York", rows.subList(1, 5))
+        assertEquals(listOf(1, 3, 4, 5), result.map { it.hourOfDay })
+    }
+
+    private suspend fun assertNightForecast(startUtc: String) {
+        val start = utc(startUtc)
+        val rows = (0 until 48).map { start + it * 3_600_000L }
+        assertForecast(rows, start + 23 * 3_600_000L + 600_000L, "Asia/Taipei", "Asia/Taipei", rows.subList(23, 27))
+    }
+
+    private suspend fun assertForecast(
+        rows: List<Long>, nowMillis: Long, serviceZone: String, deviceZone: String, expected: List<Long>,
+        sourceOffsetMillis: Int? = null
+    ): List<HourlyWeather> {
+        val previousZone = TimeZone.getDefault()
+        val sourceZone = TimeZone.getTimeZone(serviceZone)
+        val sourceOffset = sourceOffsetMillis ?: sourceZone.getOffset(nowMillis)
+        TimeZone.setDefault(TimeZone.getTimeZone(deviceZone))
+        try {
+            weatherResponse = { url ->
+                // ISO responses use the request-time fixed offset; Unix responses preserve instants.
+                val format = SimpleDateFormat("yyyy-MM-dd'T'HH:mm", Locale.US).apply {
+                    timeZone = SimpleTimeZone(sourceOffset, "response offset")
+                }
+                val times = if (url.query.contains("timeformat=unixtime")) {
+                    JSONArray(rows.map { it / 1000 })
+                } else {
+                    JSONArray(rows.map { format.format(Date(it)) })
+                }
+                JSONObject().put("timezone", serviceZone)
+                    .put("utc_offset_seconds", sourceOffset / 1000)
+                    .put("current", JSONObject().put("temperature_2m", 21).put("weather_code", 0))
+                    .put("hourly", JSONObject().put("time", times)
+                        .put("temperature_2m", JSONArray(rows.mapIndexed { index, _ -> index + 10 }))
+                        .put("weather_code", JSONArray(rows.map { 0 }))).toString()
+            }
+            val weather = fetchOpenMeteoWeather(25.0, 121.0, "Fixture City", now = { nowMillis })
+            assertNotNull("Valid source zone $serviceZone must load", weather)
+            val result = weather!!.hourlyList
+            assertEquals("Forecast must preserve the ordered instants", expected, result.map { it.timestampMillis })
+            assertEquals("Values must stay attached to their source instants",
+                expected.map { rows.indexOf(it) + 10f }, result.map { it.tempC })
+            assertTrue("Forecast must preserve its source zone", result.all { it.timeZoneId == serviceZone })
+            return result
+        } finally {
+            TimeZone.setDefault(previousZone)
+        }
+    }
+
+    private fun utc(value: String): Long = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).apply {
+        timeZone = TimeZone.getTimeZone("UTC")
+    }.parse(value)!!.time
 
     private fun contextWithNoLocation(savedLocation: Boolean = false): Context {
         val target = InstrumentationRegistry.getInstrumentation().targetContext
