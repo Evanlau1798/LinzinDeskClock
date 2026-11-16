@@ -668,9 +668,11 @@ private suspend fun fetchCityNameFallback(lat: Double, lon: Double, languageTag:
 /**
  * 查詢並解析 HTTPS 天氣；傳輸失敗不降級明文
  */
-suspend fun fetchOpenMeteoWeather(lat: Double, lon: Double, cityName: String): WeatherInfo? = withContext(Dispatchers.IO) {
+suspend fun fetchOpenMeteoWeather(
+    lat: Double, lon: Double, cityName: String, now: () -> Long = System::currentTimeMillis
+): WeatherInfo? = withContext(Dispatchers.IO) {
     // 加上 forecast_days=2 只抓今明兩天（48小時），大幅縮小封包體積並加快回應速度
-    val httpsUrl = "https://api.open-meteo.com/v1/forecast?latitude=$lat&longitude=$lon&current=temperature_2m,weather_code&hourly=temperature_2m,weather_code&forecast_days=2&timezone=auto"
+    val httpsUrl = "https://api.open-meteo.com/v1/forecast?latitude=$lat&longitude=$lon&current=temperature_2m,weather_code&hourly=temperature_2m,weather_code&forecast_days=2&timezone=auto&timeformat=unixtime"
 
     try {
         val responseText = readHttpsJson(httpsUrl)
@@ -686,42 +688,18 @@ suspend fun fetchOpenMeteoWeather(lat: Double, lon: Double, cityName: String): W
         val temps = hourlyObj.getJSONArray("temperature_2m")
         val codes = hourlyObj.getJSONArray("weather_code")
 
-        val nowCal = Calendar.getInstance()
-        val currentHourInt = nowCal.get(Calendar.HOUR_OF_DAY)
-
-        val hourlyResult = mutableListOf<HourlyWeather>()
-        val inFormat = SimpleDateFormat("yyyy-MM-dd'T'HH:mm", Locale.US)
-
-        for (i in 0 until times.length()) {
-            val tStr = times.getString(i)
-            val date = inFormat.parse(tStr)
-            if (date != null) {
-                val cal = Calendar.getInstance().apply { time = date }
-                if (cal.get(Calendar.HOUR_OF_DAY) >= currentHourInt && cal.get(Calendar.DAY_OF_YEAR) == nowCal.get(Calendar.DAY_OF_YEAR)) {
-                    val hour = cal.get(Calendar.HOUR_OF_DAY)
-                    val t = temps.getDouble(i).toFloat()
-                    val c = codes.getInt(i)
-                    hourlyResult.add(HourlyWeather(hourOfDay = hour, tempC = t, weatherCode = c))
-                    if (hourlyResult.size == 4) break
-                }
-            }
+        require(times.length() == temps.length() && times.length() == codes.length())
+        val timeZoneId = root.getString("timezone")
+        val hours = (0 until times.length()).map { index ->
+            val seconds = times.getLong(index)
+            require(seconds in Long.MIN_VALUE / 1000..Long.MAX_VALUE / 1000)
+            val timestamp = seconds * 1000
+            val hour = forecastHour(timestamp, timeZoneId)
+            val temperature = temps.getDouble(index).toFloat()
+            require(temperature.isFinite())
+            HourlyWeather(hour, temperature, codes.getInt(index), timestamp, timeZoneId)
         }
-
-        var fallbackIdx = 0
-        while (hourlyResult.size < 4 && fallbackIdx < times.length()) {
-            val tStr = times.getString(fallbackIdx)
-            val date = inFormat.parse(tStr)
-            if (date != null) {
-                val cal = Calendar.getInstance().apply { time = date }
-                val hour = cal.get(Calendar.HOUR_OF_DAY)
-                val t = temps.getDouble(fallbackIdx).toFloat()
-                val c = codes.getInt(fallbackIdx)
-                if (hourlyResult.none { it.hourOfDay == hour }) {
-                    hourlyResult.add(HourlyWeather(hourOfDay = hour, tempC = t, weatherCode = c))
-                }
-            }
-            fallbackIdx++
-        }
+        val hourlyResult = selectUpcomingForecast(hours, now(), timeZoneId)
 
         WeatherInfo(
             cityName = cityName,

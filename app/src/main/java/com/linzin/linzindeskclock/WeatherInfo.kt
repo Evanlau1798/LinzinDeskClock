@@ -3,7 +3,9 @@ package com.linzin.linzindeskclock
 data class HourlyWeather(
     val hourOfDay: Int,
     val tempC: Float,
-    val weatherCode: Int
+    val weatherCode: Int,
+    val timestampMillis: Long,
+    val timeZoneId: String
 )
 
 data class WeatherInfo(
