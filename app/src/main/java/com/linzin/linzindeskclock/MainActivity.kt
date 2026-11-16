@@ -2,6 +2,7 @@ package com.linzin.linzindeskclock
 
 import com.linzin.clockcore.ClockAngles
 import com.linzin.clockcore.ClockLayoutMode
+import com.linzin.clockcore.MonthGrid
 
 import android.Manifest
 import android.annotation.SuppressLint
@@ -3753,9 +3754,7 @@ fun SideDateWidget(
         }
     }
 
-    val calendar = remember(currentTime) {
-        Calendar.getInstance().apply { timeInMillis = currentTime }
-    }
+    val monthGrid = remember(currentTime) { MonthGrid.at(currentTime, TimeZone.getDefault()) }
 
     val dateObj = remember(currentTime) { Date(currentTime) }
     val dayOfWeekStr = remember(currentTime) {
@@ -3771,15 +3770,9 @@ fun SideDateWidget(
         getCachedDateFormat("MMMM", Locale.US).format(dateObj).uppercase(Locale.US)
     }
 
-    val currentDay = calendar.get(Calendar.DAY_OF_MONTH)
-    val maxDay = calendar.getActualMaximum(Calendar.DAY_OF_MONTH)
-    val firstDayOfWeek = remember(currentTime) {
-        val cal = Calendar.getInstance().apply {
-            timeInMillis = currentTime
-            set(Calendar.DAY_OF_MONTH, 1)
-        }
-        cal.get(Calendar.DAY_OF_WEEK) - 1
-    }
+    val currentDay = monthGrid.day
+    val maxDay = monthGrid.daysInMonth
+    val firstDayOfWeek = monthGrid.firstDayOffset
 
     val daysOfWeek = listOf("S", "M", "T", "W", "T", "F", "S")
 
