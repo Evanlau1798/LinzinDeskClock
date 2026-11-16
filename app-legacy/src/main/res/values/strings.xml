@@ -13,4 +13,16 @@
     <string name="calendar_unavailable">Calendar unavailable</string>
     <string name="calendar_untitled">Untitled event</string>
     <string name="calendar_empty">No upcoming events</string>
+    <string name="clock_style">Change clock style</string>
+    <string name="layout_single">Single clock</string>
+    <string name="layout_left">Dual: large clock on the left</string>
+    <string name="layout_right">Dual: large clock on the right</string>
+    <string name="switch_page">Switch sidebar page</string>
+    <string name="page_calendar">Calendar</string>
+    <string name="page_weather">Weather</string>
+    <string name="lock_controls">Lock</string>
+    <string name="unlock_controls">Unlock</string>
+    <string name="calendar_disabled">Recent events are off</string>
+    <string name="show_seconds">Show seconds</string>
+    <string name="hide_seconds">Hide seconds</string>
 </resources>

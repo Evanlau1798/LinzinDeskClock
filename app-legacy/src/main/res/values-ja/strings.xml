@@ -13,4 +13,16 @@
     <string name="calendar_unavailable">カレンダーを利用できません</string>
     <string name="calendar_untitled">無題の予定</string>
     <string name="calendar_empty">今後の予定はありません</string>
+    <string name="clock_style">時計のスタイルを変更</string>
+    <string name="layout_single">時計のみ</string>
+    <string name="layout_left">2列：大きい時計を左に表示</string>
+    <string name="layout_right">2列：大きい時計を右に表示</string>
+    <string name="switch_page">サイドバーのページを切り替え</string>
+    <string name="page_calendar">カレンダー</string>
+    <string name="page_weather">天気</string>
+    <string name="lock_controls">ロック</string>
+    <string name="unlock_controls">解除</string>
+    <string name="calendar_disabled">予定の表示はオフです</string>
+    <string name="show_seconds">秒を表示</string>
+    <string name="hide_seconds">秒を非表示</string>
 </resources>
