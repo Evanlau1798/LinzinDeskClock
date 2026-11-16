@@ -145,4 +145,10 @@
 
     <string name="weather_update_unavailable">尚未更新 · %1$s 的天氣</string>
     <string name="weather_retry">點擊重試</string>
+    <string name="weather_last_location">上次位置 · %1$s · %2$s</string>
+    <string name="weather_location_time_unknown">時間未知</string>
+    <string name="weather_location_source_unknown">來源未知</string>
+    <string name="weather_location_source_gps">GPS</string>
+    <string name="weather_location_source_network">網路</string>
+    <string name="weather_location_source_passive">被動定位</string>
 </resources>

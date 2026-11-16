@@ -145,4 +145,10 @@
 
     <string name="weather_update_unavailable">Update unavailable · %1$s</string>
     <string name="weather_retry">Tap to retry</string>
+    <string name="weather_last_location">Last location · %1$s · %2$s</string>
+    <string name="weather_location_time_unknown">Time unknown</string>
+    <string name="weather_location_source_unknown">Source unknown</string>
+    <string name="weather_location_source_gps">GPS</string>
+    <string name="weather_location_source_network">Network</string>
+    <string name="weather_location_source_passive">Passive</string>
 </resources>

@@ -455,6 +455,8 @@ fun applyDisplayCutoutMode(window: Window?, extendCutout: Boolean) {
  */
 private fun isValidLocation(loc: Location?): Boolean {
     if (loc == null) return false
+    if (!loc.latitude.isFinite() || !loc.longitude.isFinite() ||
+        loc.latitude !in -90.0..90.0 || loc.longitude !in -180.0..180.0) return false
     return kotlin.math.abs(loc.latitude) > 0.001 || kotlin.math.abs(loc.longitude) > 0.001
 }
 
@@ -481,7 +483,8 @@ suspend fun fetchBestLocation(context: Context): Location? = withContext(Dispatc
     val lastLocation = candidates.maxByOrNull { it.time }
 
     // 若有效快取在 10 分鐘內，直接返回以節省電量
-    if (lastLocation != null && (System.currentTimeMillis() - lastLocation.time) < 10 * 60 * 1000L) {
+    if (lastLocation != null && lastLocation.time > 0 &&
+        (System.currentTimeMillis() - lastLocation.time) in 0 until 10 * 60 * 1000L) {
         return@withContext lastLocation
     }
 
@@ -559,30 +562,12 @@ suspend fun fetchAndApplyWeather(
         val prefs = context.getSharedPreferences("desk_clock_prefs", Context.MODE_PRIVATE)
         val location = fetchBestLocation(context)
 
-        var lat: Double? = null
-        var lon: Double? = null
-        var detectedCity: String? = null
+        val position = if (location != null && isValidLocation(location)) {
+            rememberWeatherLocation(prefs, location, System.currentTimeMillis())
+        } else readWeatherLocation(prefs)
 
-        if (location != null && isValidLocation(location)) {
-            // 1. 成功取得硬體/系統定位，更新並持久化保存座標供室內備援使用
-            lat = location.latitude
-            lon = location.longitude
-            prefs.edit()
-                .putString("pref_last_valid_lat", lat.toString())
-                .putString("pref_last_valid_lon", lon.toString())
-                .apply()
-        } else {
-            // 2. 室內無法取得即時定位時，優先沿用上一次儲存的真實座標
-            val savedLat = prefs.getString("pref_last_valid_lat", null)?.toDoubleOrNull()
-            val savedLon = prefs.getString("pref_last_valid_lon", null)?.toDoubleOrNull()
-            if (savedLat != null && savedLon != null) {
-                lat = savedLat
-                lon = savedLon
-            }
-        }
-
-        val finalLat = lat
-        val finalLon = lon
+        val finalLat = position?.latitude
+        val finalLon = position?.longitude
         if (finalLat == null || finalLon == null || !finalLat.isFinite() || !finalLon.isFinite() ||
             finalLat !in -90.0..90.0 || finalLon !in -180.0..180.0) {
             withContext(Dispatchers.Main) { onResult(null) }
@@ -595,7 +580,7 @@ suspend fun fetchAndApplyWeather(
             currentAppLocaleTag
         }
 
-        detectedCity = systemGeocode(finalLat, finalLon)
+        var detectedCity = systemGeocode(finalLat, finalLon)
 
         // 2. 若仍無具體城市名稱，使用線上反向地理編碼取得 Level 5~8 行政區
         if (detectedCity.isNullOrBlank()) {
@@ -605,7 +590,7 @@ suspend fun fetchAndApplyWeather(
         val finalCityName = detectedCity?.takeIf { it.isNotBlank() } ?: currentLocationStr
         val data = fetchOpenMeteoWeather(finalLat, finalLon, finalCityName)
         withContext(Dispatchers.Main) {
-            onResult(data)
+            onResult(data?.copy(location = position))
         }
     } catch (e: CancellationException) {
         throw e
