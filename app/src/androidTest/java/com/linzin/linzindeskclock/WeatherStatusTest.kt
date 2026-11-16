@@ -28,6 +28,32 @@ class WeatherStatusTest {
     @get:Rule val compose = createComposeRule()
 
     @Test
+    fun weatherDoesNotPresentUnattributedCoordinatesAsLiveLocation() {
+        compose.setContent {
+            SideWeatherWidget(
+                weatherEnabled = true,
+                weatherInfo = WeatherInfo("Old city", 21f, 0, emptyList()),
+                isFahrenheit = false
+            )
+        }
+        compose.onNodeWithText("Last location · Time unknown · Source unknown").assertIsDisplayed()
+    }
+
+    @Test
+    fun oldSystemLocationShowsItsFixTimeAndProvider() {
+        val previousZone = TimeZone.getDefault()
+        TimeZone.setDefault(TimeZone.getTimeZone("UTC"))
+        try {
+            compose.setContent {
+                SideWeatherWidget(weatherEnabled = true, isFahrenheit = false,
+                    weatherInfo = WeatherInfo("Old city", 21f, 0, emptyList(),
+                        location = WeatherLocation(25.0, 121.0, 1000, "gps", 2000)))
+            }
+            compose.onNodeWithText("Last location · 1970/1/1 00:00 · GPS").assertIsDisplayed()
+        } finally { TimeZone.setDefault(previousZone) }
+    }
+
+    @Test
     fun retainedWeatherCanRetryAndCannotDuplicateAnActiveRefresh() {
         var refreshes = 0
         val refreshing = mutableStateOf(false)

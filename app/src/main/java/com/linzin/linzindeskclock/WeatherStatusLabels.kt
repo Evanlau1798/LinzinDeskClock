@@ -19,6 +19,20 @@ import java.util.Locale
 
 @Composable
 internal fun WeatherStatusLabels(info: WeatherInfo, isRefreshing: Boolean, onRefresh: () -> Unit) {
+    val fixTime = info.location?.knownFixTime(System.currentTimeMillis())
+    val locationTime = fixTime?.let {
+        SimpleDateFormat("yyyy/M/d HH:mm", Locale.getDefault()).format(Date(it))
+    } ?: stringResource(R.string.weather_location_time_unknown)
+    val source = stringResource(when (info.location?.provider) {
+        "gps" -> R.string.weather_location_source_gps
+        "network" -> R.string.weather_location_source_network
+        "passive" -> R.string.weather_location_source_passive
+        else -> R.string.weather_location_source_unknown
+    })
+    Text(
+        text = stringResource(R.string.weather_last_location, locationTime, source),
+        color = Color(0xFF81C7D4), fontSize = 11.sp, lineHeight = 14.sp
+    )
     if (info.isStale) {
         val time = SimpleDateFormat("M/d HH:mm", Locale.getDefault()).format(Date(info.fetchedAtMillis))
         Column(

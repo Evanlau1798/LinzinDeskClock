@@ -182,7 +182,27 @@ class WeatherTransportTest {
             systemGeocode = { _, _ -> null }) { result = it }
         assertEquals("Fixture City", result!!.cityName)
         assertEquals(21f, result!!.currentTempC)
+        assertEquals(25.0, result!!.location!!.latitude, 0.0)
+        assertNull(result!!.location!!.fixTimeMillis)
+        assertNull(result!!.location!!.provider)
         assertTrue(requests.any { it.host == "api.open-meteo.com" })
+    }
+
+    @Test
+    fun savedMetadataReachesWeatherWithoutRefreshingItsFixTime() = runBlocking {
+        val context = contextWithNoLocation(savedLocation = true)
+        val prefs = context.getSharedPreferences("desk_clock_prefs", Context.MODE_PRIVATE)
+        prefs.edit().putString("pref_last_location_fix_time", "1000")
+            .putString("pref_last_location_provider", "gps")
+            .putString("pref_last_location_observed_at", "2000").commit()
+        repeat(2) {
+            var result: WeatherInfo? = null
+            fetchAndApplyWeather(context, "Current location", systemGeocode = { _, _ -> null }) { result = it }
+            assertEquals(1000L, result!!.location!!.fixTimeMillis)
+            assertEquals("gps", result!!.location!!.provider)
+            assertEquals(2000L, result!!.location!!.observedAtMillis)
+        }
+        assertEquals("1000", prefs.getString("pref_last_location_fix_time", null))
     }
 
     @Test
