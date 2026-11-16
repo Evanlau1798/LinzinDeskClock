@@ -192,19 +192,6 @@ enum class ClockLayoutMode {
     DUAL_RIGHT_LARGE
 }
 
-data class HourlyWeather(
-    val hourOfDay: Int,
-    val tempC: Float,
-    val weatherCode: Int
-)
-
-data class WeatherInfo(
-    val cityName: String,
-    val currentTempC: Float,
-    val currentWeatherCode: Int,
-    val hourlyList: List<HourlyWeather>
-)
-
 data class BatteryState(
     val level: Int = 100,
     val isCharging: Boolean = false
@@ -601,8 +588,13 @@ suspend fun fetchAndApplyWeather(
             }
         }
 
-        val finalLat = lat ?: 24.838
-        val finalLon = lon ?: 121.017
+        val finalLat = lat
+        val finalLon = lon
+        if (finalLat == null || finalLon == null || !finalLat.isFinite() || !finalLon.isFinite() ||
+            finalLat !in -90.0..90.0 || finalLon !in -180.0..180.0) {
+            withContext(Dispatchers.Main) { onResult(null) }
+            return@withContext
+        }
 
         val langTag = if (currentAppLocaleTag == "system") {
             getSystemDefaultLocale().toLanguageTag()
@@ -3630,9 +3622,7 @@ fun DeskClockScreen(
                 if ((hasFine || hasCoarse) && weatherEnabled && layoutMode != ClockLayoutMode.SINGLE && weatherInfo == null) {
                     CoroutineScope(Dispatchers.IO).launch {
                         fetchAndApplyWeather(context, currentLocationStr) { data ->
-                            if (data != null) {
-                                weatherInfo = data
-                            }
+                            weatherInfo = weatherAfterRefresh(weatherInfo, data)
                             isWeatherRefreshing = false
                         }
                     }
@@ -3657,7 +3647,7 @@ fun DeskClockScreen(
                 while (true) {
                     isWeatherRefreshing = true
                     fetchAndApplyWeather(context, currentLocationStr) { data ->
-                        weatherInfo = data
+                        weatherInfo = weatherAfterRefresh(weatherInfo, data)
                         isWeatherRefreshing = false
                     }
                     isWeatherRefreshing = false
@@ -4593,6 +4583,8 @@ fun SideWeatherWidget(
                         fontWeight = FontWeight.Bold
                     )
                 }
+
+                WeatherStatusLabels(weatherInfo, isRefreshing, onRefresh)
 
                 BoxWithConstraints(
                     modifier = Modifier
