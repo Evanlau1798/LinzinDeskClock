@@ -1,4 +1,5 @@
 import hashlib
+import io
 import json
 from pathlib import Path
 import struct
@@ -6,9 +7,10 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 import zipfile
 
-from r8_artifacts import archive_release, verify_archive, verify_pair
+from r8_artifacts import archive_release, main, verify_archive, verify_pair
 
 
 class MappingPairTest(unittest.TestCase):
@@ -106,6 +108,35 @@ class MappingPairTest(unittest.TestCase):
             archive_release(self.apk, self.mapping, metadata, 'app', '1' * 40,
                 {'applicationId': 'com.example.clock', 'versionCode': 2, 'versionName': '1.1', 'minSdk': 21}, output)
         self.assertFalse(output.exists(), 'Mismatched metadata must not create retained evidence')
+
+    def test_export_reads_utf8_aapt_labels_under_a_cp950_host_locale(self):
+        metadata = self.root / 'metadata.json'
+        metadata.write_text(json.dumps({'applicationId': 'com.example.clock', 'variantName': 'release',
+            'elements': [{'versionCode': 2, 'versionName': '1.1', 'outputFile': 'clock.apk'}]}))
+        badging = ("package: name='com.example.clock' versionCode='2' versionName='1.1'\n"
+                   "minSdkVersion:'21'\napplication-label-ja:'時計'\n").encode('utf-8')
+        real_command = subprocess.check_output
+
+        def command(arguments, **kwargs):
+            if arguments[:3] == ['git', 'status', '--porcelain']:
+                return b''
+            if arguments[:3] == ['git', 'rev-parse', 'HEAD']:
+                return '1' * 40
+            return real_command([sys.executable, '-c',
+                f"import sys; sys.stdout.buffer.write(bytes.fromhex('{badging.hex()}'))"], **kwargs)
+
+        output = self.root / 'utf8-exports'
+        arguments = ['r8_artifacts.py', 'export', '--apk', str(self.apk), '--mapping', str(self.mapping),
+            '--metadata', str(metadata), '--module', 'app', '--aapt2', 'aapt2', '--output', str(output)]
+        completed = True
+        with mock.patch.object(sys, 'argv', arguments), mock.patch('subprocess._text_encoding', return_value='cp950'), \
+             mock.patch('r8_artifacts.subprocess.check_output', side_effect=command), mock.patch('sys.stdout', new_callable=io.StringIO):
+            try:
+                main()
+            except SystemExit:
+                completed = False
+        self.assertTrue(completed, 'Valid UTF-8 aapt2 output must export on a CP950 Windows host')
+        self.assertEqual(1, len(list(output.glob('*.zip'))))
 
     def test_archive_does_not_overwrite_existing_evidence(self):
         self.assertIsNotNone(self.archive(), 'First export must exist')

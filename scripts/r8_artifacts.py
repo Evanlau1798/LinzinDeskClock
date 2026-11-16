@@ -165,7 +165,7 @@ def main():
             if subprocess.check_output(['git', 'status', '--porcelain'], cwd=root):
                 raise ValueError('Commit or isolate checkout changes before exporting release provenance')
             commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=root, text=True).strip()
-            badging = subprocess.check_output([str(args.aapt2), 'dump', 'badging', str(args.apk)], text=True)
+            badging = subprocess.check_output([str(args.aapt2), 'dump', 'badging', str(args.apk)], encoding='utf-8')
             package = re.search(r"^package: name='([^']+)' versionCode='([0-9]+)' versionName='([^']*)'", badging, re.M)
             minimum = re.search(r"^(?:minSdkVersion|sdkVersion):'([0-9]+)'", badging, re.M)
             if not package or not minimum:
