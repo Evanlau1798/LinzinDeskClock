@@ -1,11 +1,18 @@
-# Legacy feasibility slice
+# Legacy implementation
 
-This isolated experiment targets **API 14** and **API 19** with one minSdk 14
-APK. It is not an API14-FULL or API19-CONSERVATIVE product release.
+This isolated implementation targets **API 14** and **API 19** with one minSdk 14
+APK. Clock and layout integration follows the accepted feasibility slice;
+the remaining features below are still in progress. This is not an API14-FULL
+or API19-CONSERVATIVE product release.
 The modern `app` keeps minSdk 21. The two renderers actually share Java 8
-`clock-core` hand-angle calculations.
+`clock-core` hand-angle calculations and persisted layout names.
 
-API14 and API19 release screenshots:
+API19 debug fixtures at 2026-02-28 13:05:09 UTC (uniform cells, not device layouts):
+
+![Eight styles in 24-hour format](../docs/images/legacy-eight-styles-24h.png)
+![Eight styles in 12-hour format](../docs/images/legacy-eight-styles-12h.png)
+
+Original feasibility release screenshots (before the eight-style integration):
 
 ![API14 at 320x480](../docs/images/legacy-api14-spike.png)
 ![API19 at 480x800](../docs/images/legacy-api19-spike.png)
@@ -19,16 +26,31 @@ an experimental identity; final signing and upgrade policy remain release work.
 
 | Capability | This slice | Full implementation still required |
 | --- | --- | --- |
-| Clock | Native analog Canvas, animated seconds, wall time | All eight styles, seconds controls and golden fixtures |
-| Settings | Persistent 12/24-hour display | Language selector, units, brightness, rotation, timeout, tutorials |
-| Layout | One clock with native controls | Single/dual regions, gestures, lock, narrow/font-scale matrix |
-| Calendar | Three upcoming entries in seven days, read-only worker, permission/empty/error states | Month view and complete sidebar behavior |
+| Clock | Original three digital, three analog and two flip styles; animated seconds/flip; wall time, date; fixed-time fixtures | Remaining settings UI and final hardware acceptance |
+| Settings | Persistent 12/24-hour display and per-family style/seconds state | Language selector, units, brightness, rotation, timeout, tutorials |
+| Layout | Single and mirrored 70/30 dual panes, sidebar pages, touch lock, tap/double-tap/two-finger/vertical swipe controls | Remaining content/settings panels |
+| Calendar | Three upcoming entries in seven days; explicit off/permission/empty/error states; read-only visible-page worker | Month view and permission/settings UI |
 | Weather | Manual HTTPS current temperature from saved valid coordinates, stale/error labeling | Live location, geocoding integration, four forecasts, complete persistence |
 | Other | Foreground animation and cleanup | Battery, update UI, capability notices and full lifecycle matrix |
 | Quality | API14/19 emulator, R8/v1, network trust boundary probes | Old ARM hardware budgets, upgrades, soak and final release gates |
 
 RuntimeShader and fold/cutout capabilities are not provided by this slice.
 Do not treat a missing general feature as an accepted platform downgrade.
+Fresh installs start with a single clock and recent events off. Calendar settings
+are currently seeded by the test fixture; the full settings UI is a later work
+package. Hidden pages cancel their work and reject late results. A cancelled
+weather request returns to its cached or idle state.
+
+Clock artwork comes directly from the modern module's 96 vector sources.
+The Gradle Variant API registers the generated resources; Android's build-time
+rasterizer supplies mdpi/hdpi/xhdpi PNG fallbacks below API21. Only the selected
+style's drawables and tint filters are cached. No runtime vector parser is added.
+Two-finger taps change the current family's style; double taps toggle its seconds;
+vertical swipes change clock families or non-scrolling sidebar pages. Slow drags
+work without fling velocity. The visible page button also supports long content.
+Controls hide after five seconds; a single tap exposes them, including unlock.
+A standard seconds button also supports keyboard and screen-reader operation;
+the clock's accessible readout includes the date whenever the date is visible.
 
 ## Build and test
 
@@ -51,9 +73,11 @@ Do not check a keystore or its passwords into Git.
 .\scripts\Test-Legacy.ps1 -Serial emulator-5562 -Apk C:\absolute\legacy-signed.apk
 ```
 
-The runner checks the real API number and APK hashes, then exercises clock,
-process restart, an owned CalendarProvider fixture, real Open-Meteo JSON, and
-TLS positive/negative controls. It fails on unavailable live services and
+The runner checks the real API number and APK hashes, then exercises all eight
+public styles, persisted settings, single/dual layouts, rotation, gestures/lock,
+an owned CalendarProvider fixture and its off state, real Open-Meteo JSON,
+TLS positive/negative controls and cancellation after hiding weather.
+It fails on unavailable live services and
 cleans up its own calendar in `finally`. It resets **this experimental app's**
 preferences. Use isolated AVDs. Every ADB command includes the supplied serial.
 
@@ -64,7 +88,14 @@ API14 has no CancellationSignal query API: late cursors are closed and discarded
 an in-flight CalendarProvider Binder operation cannot be forcibly interrupted.
 
 For debug-only internal boundary probes, use the same native instrumentation
-with `-e mode calendarChecks` or `-e mode socketChecks`. The latter connects to
+with `-e mode clockStyles`, `displayChecks`, `dateReadout`, `calendarChecks` or `socketChecks`.
+`directTls12` and `directTls13` isolate a verified provider handshake from the
+platform URLConnection adapter; they do not change the product protocol policy.
+Clock fixtures use the same UTC time in all eight styles, both time formats,
+seconds visibility, time-zone change and month rollover; two PNG grids are written
+to the app's private files directory. Display checks use real OS rotation plus
+a fontScale 2 native view context, checking real 48dp touch targets without
+changing the emulator's global font setting. Socket checks connect to
 a silent loopback TLS peer and checks deadline/cancellation socket closure.
 These modes reference unminified implementation classes; the external matrix
 above also works against R8 release builds.

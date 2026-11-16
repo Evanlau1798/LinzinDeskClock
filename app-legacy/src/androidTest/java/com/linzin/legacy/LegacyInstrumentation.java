@@ -26,7 +26,67 @@ public class LegacyInstrumentation extends Instrumentation {
         Bundle result = new Bundle();
         int code = Activity.RESULT_OK;
         try {
-            if ("certificateChecks".equals(mode)) {
+            if ("secondsControls".equals(mode) || "dateReadout".equals(mode)) {
+                getTargetContext().getSharedPreferences("desk_clock_prefs", Context.MODE_PRIVATE).edit().clear().commit();
+                launch();
+                if ("secondsControls".equals(mode)) AccessibilityChecks.seconds(this, activity);
+                else AccessibilityChecks.date(this, activity);
+                result.putString("stream", "OK: " + mode);
+            } else if ("twoFingerOrder".equals(mode)) {
+                getTargetContext().getSharedPreferences("desk_clock_prefs", Context.MODE_PRIVATE).edit().clear().commit();
+                launch(); TwoFingerChecks.run(this, activity);
+                result.putString("stream", "OK: both pointer orders and moving-pointer rejection");
+            } else if ("directTls12".equals(mode) || "directTls13".equals(mode)) {
+                result.putString("stream", DirectTlsChecks.run(getTargetContext(), "directTls12".equals(mode) ? "TLSv1.2" : "TLSv1.3"));
+            } else if ("stylesExternal".equals(mode)) {
+                getTargetContext().getSharedPreferences("desk_clock_prefs", Context.MODE_PRIVATE).edit().clear()
+                    .putBoolean("pref_24_hour", true).putInt("pref_main_page", 0)
+                    .putBoolean("pref_digital_show_sec", false).putBoolean("pref_analog_show_sec", false).putBoolean("pref_flip_show_sec", false).commit();
+                launch(); ExternalStylesChecks.run(this, activity);
+                result.putString("stream", "OK: all eight public styles draw distinctly with wall time");
+            } else if ("rotation".equals(mode)) {
+                launch(); RotationChecks.run(this, activity);
+                result.putString("stream", "OK: real landscape/portrait on installed candidate");
+            } else if ("displayChecks".equals(mode)) {
+                getTargetContext().getSharedPreferences("desk_clock_prefs", Context.MODE_PRIVATE).edit().clear().commit();
+                launch(); DisplayChecks.run(this, activity);
+                result.putString("stream", "OK: real landscape/portrait and fontScale2 native layout/48dp fixture");
+            } else if ("paneCancellation".equals(mode)) {
+                selectSidebar(1);
+                getTargetContext().getSharedPreferences("desk_clock_prefs", Context.MODE_PRIVATE).edit()
+                    .putString("pref_last_valid_lat", "25.0").putString("pref_last_valid_lon", "121.0").commit();
+                try (PaneCancellationChecks fixture = new PaneCancellationChecks()) {
+                    HttpsProbe.install(fixture.endpoint); launch(); fixture.run(this, activity);
+                }
+                result.putString("stream", "OK: hidden weather cancels transport, clears updating state and rejects late results");
+            } else if ("gestures".equals(mode)) {
+                getTargetContext().getSharedPreferences("desk_clock_prefs", Context.MODE_PRIVATE).edit().clear()
+                    .putInt("pref_main_page", 0).putInt("pref_digital_style_idx", 0).putBoolean("pref_digital_show_sec", false).commit();
+                launch();
+                GestureChecks.run(this, activity);
+                result.putString("stream", "OK: style/seconds/family/sidebar gestures and lock/unlock reachability");
+            } else if ("layouts".equals(mode)) {
+                getTargetContext().getSharedPreferences("desk_clock_prefs", Context.MODE_PRIVATE).edit().clear()
+                    .putString("pref_layout_mode", "SINGLE").putInt("pref_side_page", 0).commit();
+                launch();
+                LayoutChecks.run(this, activity);
+                result.putString("stream", "OK: single/dual mirrored 70/30 panes, sidebar switching and touch lock");
+            } else if ("clockStyles".equals(mode)) {
+                getTargetContext().getSharedPreferences("desk_clock_prefs", Context.MODE_PRIVATE).edit().clear()
+                    .putBoolean("pref_24_hour", true).putInt("pref_main_page", 0).commit();
+                launch();
+                ClockStylesChecks.run(this, activity);
+                runOnMainSync(() -> activity.finish());
+                waitForIdleSync();
+                launch();
+                final String[] label = new String[1];
+                runOnMainSync(() -> label[0] = ((Button) activity.getWindow().getDecorView().findViewWithTag("clock_style")).getText().toString());
+                check(label[0].contains("FFT"), "Selected style must survive reopening");
+                result.putString("stream", "OK: all eight styles selectable and last selection restored");
+            } else if ("artworkChecks".equals(mode)) {
+                ArtworkChecks.run(getTargetContext());
+                result.putString("stream", "OK: all 96 original clock assets available with pre21 bitmap fallback");
+            } else if ("certificateChecks".equals(mode)) {
                 CertificateChecks.run(getTargetContext(), getContext());
                 result.putString("stream", "OK: 118 root/chain keys decoded and frozen-date PKIX validated five times");
             } else if ("socketChecks".equals(mode)) {
@@ -44,7 +104,22 @@ public class LegacyInstrumentation extends Instrumentation {
                     + " display=" + display.widthPixels + "x" + display.heightPixels + " density=" + display.density
                     + " brightness=" + brightness + " plugged=" + (battery == null ? -1 : battery.getIntExtra("plugged", -1))
                     + " batteryTemperatureTenthsC=" + (battery == null ? -1 : battery.getIntExtra("temperature", -1)));
+            } else if ("calendarOff".equals(mode)) {
+                selectSidebar(0);
+                getTargetContext().getSharedPreferences("desk_clock_prefs", Context.MODE_PRIVATE).edit()
+                    .putBoolean("pref_show_calendar_events", false).commit();
+                launch();
+                String[] text = new String[1];
+                long deadline = SystemClock.elapsedRealtime() + 5000;
+                do {
+                    SystemClock.sleep(100);
+                    runOnMainSync(() -> text[0] = ((TextView) activity.getWindow().getDecorView()
+                        .findViewWithTag("calendar_status")).getText().toString());
+                } while (!text[0].contains("events are off") && !text[0].contains("Linzin Legacy fixture") && SystemClock.elapsedRealtime() < deadline);
+                check(text[0].contains("events are off"), "Disabled events must not expose provider data; got: " + text[0]);
+                result.putString("stream", "OK: disabled calendar events show an explicit off state");
             } else if ("calendarDenied".equals(mode)) {
+                selectSidebar(0);
                 launch();
                 final String[] text = new String[1];
                 long deadline = SystemClock.elapsedRealtime() + 10000;
@@ -59,6 +134,7 @@ public class LegacyInstrumentation extends Instrumentation {
                 CalendarChecks.run(getTargetContext());
                 result.putString("stream", "OK: calendar permission, parsing, cursor cleanup and late cancellation");
             } else if ("calendar".equals(mode)) {
+                selectSidebar(0);
                 launch();
                 final TextView[] calendar = new TextView[1];
                 runOnMainSync(() -> calendar[0] = activity.getWindow().getDecorView().findViewWithTag("calendar_status"));
@@ -74,6 +150,7 @@ public class LegacyInstrumentation extends Instrumentation {
             } else if ("tls".equals(mode)) {
                 tlsMatrix(result);
             } else if ("network".equals(mode)) {
+                selectSidebar(1);
                 HttpsProbe.install(new URL("https://api.open-meteo.com/v1/forecast?latitude=25.0&longitude=121.0&current=temperature_2m,weather_code&timezone=auto"));
                 getTargetContext().getSharedPreferences("desk_clock_prefs", Context.MODE_PRIVATE).edit()
                     .putString("pref_last_valid_lat", "25.0").putString("pref_last_valid_lon", "121.0").commit();
@@ -81,7 +158,8 @@ public class LegacyInstrumentation extends Instrumentation {
                 try (RuntimeSamples samples = new RuntimeSamples()) {
                     String status = refreshAndWait();
                     if (!status.contains("°")) {
-                        throw new RuntimeException("Network must return a temperature; got: " + status, HttpsProbe.failure);
+                        throw new RuntimeException("Network must return a temperature; got: " + status + " factoryHost=" + HttpsProbe.socketHost
+                            + samples.snapshot(getTargetContext()), HttpsProbe.failure);
                     }
                     check(!HttpsProbe.cleartext, "No request may use HTTP");
                     result.putString("stream", "OK: real HTTPS weather response parsed on target API; " + HttpsProbe.protocol
@@ -91,12 +169,14 @@ public class LegacyInstrumentation extends Instrumentation {
                 launch();
                 check(!getTargetContext().getSharedPreferences("desk_clock_prefs", Context.MODE_PRIVATE)
                     .getBoolean("pref_24_hour", true), "Process restart must preserve the saved setting");
-                runOnMainSync(() -> check(((Button) activity.getWindow().getDecorView().findViewWithTag("time_mode"))
-                    .getText().toString().contains("12"), "Restored UI must use 12-hour time"));
+                String[] restored = new String[1];
+                runOnMainSync(() -> restored[0] = ((Button) activity.getWindow().getDecorView().findViewWithTag("time_mode")).getText().toString());
+                check(restored[0].contains("12"), "Restored UI must use 12-hour time");
                 result.putString("stream", "OK: saved setting restored after process restart");
             } else {
+            check(mode.isEmpty() || "clock".equals(mode), "Unknown test mode: " + mode);
             getTargetContext().getSharedPreferences("desk_clock_prefs", Context.MODE_PRIVATE).edit().clear()
-                .putBoolean("pref_24_hour", true).commit();
+                .putBoolean("pref_24_hour", true).putInt("pref_main_page", 1).commit();
             launch();
             final View[] clock = new View[1];
             runOnMainSync(() -> clock[0] = activity.getWindow().getDecorView().findViewWithTag("clock"));
@@ -104,7 +184,9 @@ public class LegacyInstrumentation extends Instrumentation {
             final String[] before = new String[1];
             runOnMainSync(() -> before[0] = clock[0].getContentDescription().toString());
             SystemClock.sleep(1300);
-            runOnMainSync(() -> check(!before[0].equals(clock[0].getContentDescription().toString()), "Clock must advance using wall time"));
+            String[] afterTick = new String[1];
+            runOnMainSync(() -> afterTick[0] = clock[0].getContentDescription().toString());
+            check(!before[0].equals(afterTick[0]), "Clock must advance using wall time");
             runOnMainSync(() -> ((Button) activity.getWindow().getDecorView().findViewWithTag("time_mode")).performClick());
             check(!getTargetContext().getSharedPreferences("desk_clock_prefs", Context.MODE_PRIVATE)
                 .getBoolean("pref_24_hour", true), "Time setting must be saved");
@@ -128,6 +210,11 @@ public class LegacyInstrumentation extends Instrumentation {
         Intent launch = getTargetContext().getPackageManager().getLaunchIntentForPackage(getTargetContext().getPackageName());
         activity = startActivitySync(launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
         waitForIdleSync();
+    }
+    private void selectSidebar(int page) {
+        getTargetContext().getSharedPreferences("desk_clock_prefs", Context.MODE_PRIVATE).edit()
+            .putString("pref_layout_mode", "DUAL_LEFT_LARGE").putInt("pref_side_page", page)
+            .putBoolean("pref_show_calendar_events", true).commit();
     }
     private String refreshAndWait() {
         int requestsBefore = HttpsProbe.requests;
@@ -159,6 +246,7 @@ public class LegacyInstrumentation extends Instrumentation {
         return status[0];
     }
     private void tlsMatrix(Bundle result) throws Exception {
+        selectSidebar(1);
         URL[] endpoints = new URL[] {
             new URL("https://badssl.com/"),
             new URL("https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=25&longitude=121&localityLanguage=en"),

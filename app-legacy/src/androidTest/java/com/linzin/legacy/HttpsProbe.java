@@ -21,9 +21,10 @@ final class HttpsProbe {
     static volatile boolean cleartext;
     static volatile int requests;
     static volatile String peer;
+    static volatile String socketHost;
     private static volatile int generation;
 
-    static void begin(URL endpoint) { generation++; target = endpoint; failure = null; status = 0; protocol = null; peer = null; }
+    static void begin(URL endpoint) { generation++; target = endpoint; failure = null; status = 0; protocol = null; peer = null; socketHost = null; }
 
     static void install(URL endpoint) {
         begin(endpoint);
@@ -80,7 +81,10 @@ final class HttpsProbe {
         public String[] getDefaultCipherSuites() { return actual.getDefaultCipherSuites(); }
         public String[] getSupportedCipherSuites() { return actual.getSupportedCipherSuites(); }
         public Socket createSocket() throws IOException { return observe(actual.createSocket()); }
-        public Socket createSocket(Socket socket, String host, int port, boolean close) throws IOException { return observe(actual.createSocket(socket, host, port, close)); }
+        public Socket createSocket(Socket socket, String host, int port, boolean close) throws IOException {
+            if (generation == ticket) socketHost = host;
+            return observe(actual.createSocket(socket, host, port, close));
+        }
         public Socket createSocket(String host, int port) throws IOException { return observe(actual.createSocket(host, port)); }
         public Socket createSocket(String host, int port, InetAddress local, int localPort) throws IOException { return observe(actual.createSocket(host, port, local, localPort)); }
         public Socket createSocket(InetAddress host, int port) throws IOException { return observe(actual.createSocket(host, port)); }

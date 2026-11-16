@@ -1,6 +1,7 @@
 package com.linzin.linzindeskclock
 
 import com.linzin.clockcore.ClockAngles
+import com.linzin.clockcore.ClockLayoutMode
 
 import android.Manifest
 import android.annotation.SuppressLint
@@ -183,12 +184,6 @@ private val DeskClockColorScheme = darkColorScheme(
     onSurfaceVariant = Color(0xFFA0A0AA),
     outline = Color(0xFF5A5A62)
 )
-
-enum class ClockLayoutMode {
-    SINGLE,
-    DUAL_LEFT_LARGE,
-    DUAL_RIGHT_LARGE
-}
 
 data class BatteryState(
     val level: Int = 100,
@@ -3095,7 +3090,7 @@ fun DeskClockScreen(
     var timeoutMillis by remember { mutableLongStateOf(prefs.getLong("pref_timeout_millis", -1L)) }
     var layoutMode by remember {
         val savedModeStr = prefs.getString("pref_layout_mode", ClockLayoutMode.SINGLE.name)
-        val mode = try { ClockLayoutMode.valueOf(savedModeStr ?: ClockLayoutMode.SINGLE.name) } catch (e: Exception) { ClockLayoutMode.SINGLE }
+        val mode = ClockLayoutMode.fromPersisted(savedModeStr)
         mutableStateOf(mode)
     }
 

@@ -47,9 +47,17 @@ try {
     Invoke-Case 'clock'
     $null = Invoke-Adb @('shell', 'am', 'force-stop', $package)
     Invoke-Case 'saved'
+    Invoke-Case 'stylesExternal'
+    Invoke-Case 'layouts'
+    Invoke-Case 'rotation'
+    Invoke-Case 'gestures'
+    Invoke-Case 'twoFingerOrder'
+    Invoke-Case 'secondsControls'
     Invoke-Fixture 'create'
     Invoke-Case 'calendar'
+    Invoke-Case 'calendarOff'
     Invoke-Case 'network'
     Invoke-Case 'tls'
+    Invoke-Case 'paneCancellation'
 } finally { Invoke-Fixture 'cleanup' }
 Write-Host "PASS: Legacy external matrix on $Serial (API$api)"

@@ -5,8 +5,6 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.util.Log;
 import android.view.WindowManager;
-import android.widget.Button;
-import android.widget.LinearLayout;
 import android.widget.TextView;
 import java.net.URL;
 import java.text.SimpleDateFormat;
@@ -18,13 +16,11 @@ import java.util.concurrent.Future;
 import org.json.JSONObject;
 
 public class LegacyActivity extends Activity {
-    private LegacyClockView clock;
-    private boolean is24Hour;
+    private LegacyClockScreen screen;
     private final ExecutorService weatherWorker = Executors.newSingleThreadExecutor();
     private final Handler ui = new Handler();
     private Future<?> weatherTask;
     private volatile LegacyHttps client;
-    private Button weatherRefresh;
     private TextView weatherStatus;
     private String lastWeather;
     private boolean foreground;
@@ -36,43 +32,15 @@ public class LegacyActivity extends Activity {
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
-        is24Hour = getSharedPreferences("desk_clock_prefs", MODE_PRIVATE).getBoolean("pref_24_hour", false);
-        LinearLayout root = new LinearLayout(this);
-        root.setOrientation(LinearLayout.VERTICAL);
-        root.setBackgroundColor(android.graphics.Color.BLACK);
-        clock = new LegacyClockView(this, is24Hour);
-        root.addView(clock, new LinearLayout.LayoutParams(-1, 0, 1));
-        Button timeMode = new Button(this);
-        timeMode.setTag("time_mode");
-        timeMode.setMinHeight((int) (48 * getResources().getDisplayMetrics().density));
-        timeMode.setText(is24Hour ? R.string.time_mode_24 : R.string.time_mode_12);
-        timeMode.setOnClickListener(view -> {
-            is24Hour = !is24Hour;
-            getSharedPreferences("desk_clock_prefs", MODE_PRIVATE).edit().putBoolean("pref_24_hour", is24Hour).apply();
-            clock.set24Hour(is24Hour);
-            timeMode.setText(is24Hour ? R.string.time_mode_24 : R.string.time_mode_12);
-        });
-        root.addView(timeMode, new LinearLayout.LayoutParams(-1, -2));
-        calendarStatus = new TextView(this);
-        calendarStatus.setTag("calendar_status");
-        calendarStatus.setTextColor(android.graphics.Color.WHITE);
-        root.addView(calendarStatus, new LinearLayout.LayoutParams(-1, -2));
-        weatherStatus = new TextView(this);
-        weatherStatus.setTag("weather_status");
-        weatherStatus.setTextColor(android.graphics.Color.WHITE);
-        weatherStatus.setText(R.string.weather_idle);
-        root.addView(weatherStatus, new LinearLayout.LayoutParams(-1, -2));
-        weatherRefresh = new Button(this);
-        weatherRefresh.setTag("weather_refresh");
-        weatherRefresh.setText(R.string.weather_refresh);
-        weatherRefresh.setMinHeight((int) (48 * getResources().getDisplayMetrics().density));
-        weatherRefresh.setOnClickListener(view -> refreshWeather());
-        root.addView(weatherRefresh, new LinearLayout.LayoutParams(-1, -2));
-        setContentView(root);
+        screen = new LegacyClockScreen(this, state != null && state.getBoolean("uiLocked"),
+            this::refreshWeather, this::updateVisibleData);
+        calendarStatus = screen.calendarStatus;
+        weatherStatus = screen.weatherStatus;
+        setContentView(screen);
     }
 
     private void refreshWeather() {
-        if (!foreground || weatherTask != null) return;
+        if (!foreground || !screen.isWeatherVisible() || screen.isLocked() || weatherTask != null) return;
         final double latitude, longitude;
         try {
             android.content.SharedPreferences prefs = getSharedPreferences("desk_clock_prefs", MODE_PRIVATE);
@@ -85,7 +53,7 @@ public class LegacyActivity extends Activity {
             return;
         }
         final int ticket = ++generation;
-        weatherRefresh.setEnabled(false);
+        screen.setWeatherBusy(true);
         weatherStatus.setText(R.string.weather_updating);
         weatherTask = weatherWorker.submit(() -> {
             String incoming = null;
@@ -113,7 +81,7 @@ public class LegacyActivity extends Activity {
                     if (result != null) lastWeather = result;
                     weatherStatus.setText(result != null ? result : lastWeather == null ? getString(R.string.weather_unavailable)
                         : lastWeather + "\n" + getString(R.string.weather_unavailable));
-                    weatherRefresh.setEnabled(true);
+                    screen.setWeatherBusy(false);
                 });
             }
         });
@@ -123,28 +91,52 @@ public class LegacyActivity extends Activity {
         super.onResume();
         foreground = true;
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-        clock.start();
+        screen.resume();
+        updateVisibleData();
+    }
+
+    private void updateVisibleData() {
+        if (!foreground) return;
         final int ticket = ++calendarGeneration;
+        if (calendarTask != null) calendarTask.cancel(true);
+        calendarTask = null;
+        if (!screen.isWeatherVisible()) cancelWeather();
+        if (!screen.isCalendarVisible()) return;
+        if (!getSharedPreferences("desk_clock_prefs", MODE_PRIVATE).getBoolean("pref_show_calendar_events", false)) {
+            calendarStatus.setText(R.string.calendar_disabled);
+            return;
+        }
         calendarTask = calendarWorker.submit(() -> {
             String events = LegacyCalendar.read(getApplicationContext(), System.currentTimeMillis());
             if (Thread.currentThread().isInterrupted()) return;
             ui.post(() -> {
-                if (foreground && calendarGeneration == ticket) calendarStatus.setText(events);
+                if (foreground && screen.isCalendarVisible() && calendarGeneration == ticket) calendarStatus.setText(events);
             });
         });
     }
 
-    @Override protected void onPause() {
-        foreground = false;
+    private void cancelWeather() {
         generation++;
-        calendarGeneration++;
-        if (calendarTask != null) calendarTask.cancel(true);
+        boolean wasRefreshing = weatherTask != null;
         if (weatherTask != null) weatherTask.cancel(true);
         weatherTask = null;
         LegacyHttps request = client;
         if (request != null) request.cancel();
-        weatherRefresh.setEnabled(true);
-        clock.stop();
+        if (wasRefreshing) weatherStatus.setText(lastWeather == null ? getString(R.string.weather_idle) : lastWeather);
+        screen.setWeatherBusy(false);
+    }
+
+    @Override protected void onSaveInstanceState(Bundle state) {
+        state.putBoolean("uiLocked", screen.isLocked());
+        super.onSaveInstanceState(state);
+    }
+
+    @Override protected void onPause() {
+        foreground = false;
+        calendarGeneration++;
+        if (calendarTask != null) calendarTask.cancel(true);
+        cancelWeather();
+        screen.pause();
         getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         super.onPause();
     }

@@ -13,6 +13,10 @@ android {
         versionCode = 1
         versionName = "0.1-spike"
         testInstrumentationRunner = "com.linzin.legacy.LegacyInstrumentation"
+        vectorDrawables {
+            useSupportLibrary = false
+            generatedDensities("mdpi", "hdpi", "xhdpi")
+        }
     }
     buildTypes {
         release {
@@ -25,6 +29,27 @@ android {
         sourceCompatibility = JavaVersion.VERSION_1_8
         targetCompatibility = JavaVersion.VERSION_1_8
     }
+}
+
+abstract class ClockArtworkTask : DefaultTask() {
+    @get:InputDirectory abstract val artwork: DirectoryProperty
+    @get:OutputDirectory abstract val output: DirectoryProperty
+    @get:javax.inject.Inject abstract val files: FileSystemOperations
+    @TaskAction fun copyArtwork() {
+        files.sync {
+            from(artwork) {
+                include("tk_*.xml", "ttn_*.xml", "rafm_*.xml", "abw_*.xml", "oet_*.xml", "zmg_*.xml", "pp_*.xml", "fft_*.xml")
+            }
+            into(output.dir("drawable"))
+        }
+    }
+}
+val clockArtwork = tasks.register<ClockArtworkTask>("copyClockArtwork") {
+    artwork.set(rootProject.layout.projectDirectory.dir("app/src/main/res/drawable"))
+    output.set(layout.buildDirectory.dir("generated/clock-artwork/res"))
+}
+androidComponents.onVariants { variant ->
+    variant.sources.res?.addGeneratedSourceDirectory(clockArtwork, ClockArtworkTask::output)
 }
 
 dependencies {
