@@ -1,5 +1,7 @@
 package com.linzin.linzindeskclock
 
+import com.linzin.clockcore.ClockAngles
+
 import android.Manifest
 import android.annotation.SuppressLint
 import android.app.Activity
@@ -4664,9 +4666,10 @@ fun AnalogClockFace(
             val cy = height / 2f
             val baseRadius = minOf(width, height) / 2f
 
-            val hourAngleDeg = (hours + minutes / 60f + seconds / 3600f) * 30f - 90f
-            val minAngleDeg = (minutes + seconds / 60f) * 6f - 90f
-            val secAngleDeg = seconds * 6f - 90f
+            val angles = ClockAngles.at(hours, minutes, seconds)
+            val hourAngleDeg = angles.hourDegrees
+            val minAngleDeg = angles.minuteDegrees
+            val secAngleDeg = angles.secondDegrees
 
             when (analogStyleIndex) {
                 0 -> {

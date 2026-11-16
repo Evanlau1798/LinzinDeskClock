@@ -43,6 +43,7 @@ android {
 }
 
 dependencies {
+    implementation(project(":clock-core"))
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.compose.foundation.layout)
