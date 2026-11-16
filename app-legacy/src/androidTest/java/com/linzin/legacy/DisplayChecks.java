@@ -34,7 +34,7 @@ final class DisplayChecks {
         test.waitForIdleSync();
         try {
             LayoutChecks.run(test, activity);
-            for (String tag : new String[] { "clock_style", "clock_seconds", "time_mode", "layout_mode", "side_page", "ui_lock" }) {
+            for (String tag : new String[] { "clock_style", "clock_seconds", "time_mode", "layout_mode", "side_page", "ui_lock", "settings" }) {
                 View[] control = new View[1];
                 test.runOnMainSync(() -> control[0] = screen[0].findViewWithTag(tag));
                 float target = 48 * large.getDisplayMetrics().density;

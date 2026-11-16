@@ -17,6 +17,17 @@ import java.util.Locale;
 public class LegacyInstrumentation extends Instrumentation {
     private Activity activity;
     private String mode;
+    volatile int clockResumes, clockStops;
+    private volatile Activity resumedActivity;
+    @Override public void callActivityOnResume(Activity target) {
+        super.callActivityOnResume(target);
+        resumedActivity = target;
+        if (target == activity) clockResumes++;
+    }
+    @Override public void callActivityOnStop(Activity target) {
+        super.callActivityOnStop(target);
+        if (target == activity) clockStops++;
+    }
     @Override public void onCreate(Bundle arguments) {
         super.onCreate(arguments);
         mode = arguments == null ? "" : arguments.getString("mode", "");
@@ -26,7 +37,77 @@ public class LegacyInstrumentation extends Instrumentation {
         Bundle result = new Bundle();
         int code = Activity.RESULT_OK;
         try {
-            if ("secondsControls".equals(mode) || "dateReadout".equals(mode)) {
+            if ("flipLanguage".equals(mode)) {
+                getTargetContext().getSharedPreferences("desk_clock_prefs", Context.MODE_PRIVATE).edit().clear().commit();
+                launch(); activity = WindowSettingsChecks.flipAcrossLanguage(this, activity);
+                result.putString("stream", "OK: disabling flip after language recreation restores automatic orientation");
+            } else if ("reverseRotation".equals(mode) || "reversePortrait".equals(mode)) {
+                getTargetContext().getSharedPreferences("desk_clock_prefs", Context.MODE_PRIVATE).edit().clear().commit();
+                launch(); WindowSettingsChecks.reverseRotation(this, activity, "reversePortrait".equals(mode));
+                result.putString("stream", "OK: flip preserves a reverse display pose");
+            } else if ("runtimePermission".equals(mode)) {
+                check(android.os.Build.VERSION.SDK_INT >= 23, "Runtime permission case requires API23+");
+                getTargetContext().getSharedPreferences("desk_clock_prefs", Context.MODE_PRIVATE).edit().clear().commit();
+                launch(); RuntimePermissionChecks.run(this, activity);
+                result.putString("stream", "OK: calendar permission denial and grant through system UI");
+            } else if ("brightnessSettings".equals(mode)) {
+                getTargetContext().getSharedPreferences("desk_clock_prefs", Context.MODE_PRIVATE).edit().clear().commit();
+                launch(); BrightnessSettingsChecks.run(this, activity);
+                result.putString("stream", "OK: brightness cancel/confirm, real rotation and clock application");
+            } else if ("languageSettings".equals(mode)) {
+                getTargetContext().getSharedPreferences("desk_clock_prefs", Context.MODE_PRIVATE).edit().clear().commit();
+                launch(); activity = LanguageSettingsChecks.run(this, activity);
+                result.putString("stream", "OK: language picker recreates settings and clock without changing the global locale");
+            } else if ("tutorial".equals(mode)) {
+                getTargetContext().getSharedPreferences("desk_clock_prefs", Context.MODE_PRIVATE).edit().clear().commit();
+                launch(false); TutorialChecks.first(this, activity);
+                runOnMainSync(() -> activity.finish()); waitForIdleSync();
+                launch(false); TutorialChecks.reopen(this, activity);
+                result.putString("stream", "OK: first-run guide, persistent dismissal and settings reopen");
+            } else if ("weatherSettings".equals(mode)) {
+                getTargetContext().getSharedPreferences("desk_clock_prefs", Context.MODE_PRIVATE).edit().clear()
+                    .putString("pref_app_language", "en").putString("pref_layout_mode", "DUAL_LEFT_LARGE").putInt("pref_side_page", 1)
+                    .putString("pref_last_valid_lat", "25.0").putString("pref_last_valid_lon", "121.0").commit();
+                WeatherSettingsChecks.install(); launch(); WeatherSettingsChecks.run(this, activity);
+                result.putString("stream", "OK: weather opt-in and cached Celsius/Fahrenheit settings");
+            } else if ("battery".equals(mode) || "month".equals(mode) || "batteryChecks".equals(mode) || "monthChecks".equals(mode)) {
+                getTargetContext().getSharedPreferences("desk_clock_prefs", Context.MODE_PRIVATE).edit().clear()
+                    .putBoolean("pref_show_battery", true).putString("pref_layout_mode", mode.startsWith("month") ? "DUAL_LEFT_LARGE" : "SINGLE")
+                    .putBoolean("pref_show_calendar_events", false).commit();
+                launch();
+                if ("batteryChecks".equals(mode)) BatteryChecks.run(this, activity);
+                else if ("monthChecks".equals(mode)) MonthChecks.run(this, activity);
+                else if ("battery".equals(mode)) ContentWidgetsChecks.battery(this, activity);
+                else ContentWidgetsChecks.month(this, activity);
+                result.putString("stream", "OK: " + mode);
+            } else if ("windowSettings".equals(mode) || "timeoutSettings".equals(mode) || "longTimeoutSettings".equals(mode)) {
+                long systemTimeout = android.provider.Settings.System.getInt(getTargetContext().getContentResolver(), android.provider.Settings.System.SCREEN_OFF_TIMEOUT, 15000);
+                getTargetContext().getSharedPreferences("desk_clock_prefs", Context.MODE_PRIVATE).edit().clear()
+                    .putBoolean("pref_manual_brightness", true).putFloat("pref_brightness_val", .25f)
+                    .putBoolean("pref_flip_screen_180", "windowSettings".equals(mode))
+                    .putLong("pref_timeout_millis", "windowSettings".equals(mode) ? -1 : "longTimeoutSettings".equals(mode) ? systemTimeout + 3000 : 500).commit();
+                launch();
+                if ("windowSettings".equals(mode)) WindowSettingsChecks.window(this, activity);
+                else if ("longTimeoutSettings".equals(mode)) WindowSettingsChecks.longTimeout(this, activity);
+                else WindowSettingsChecks.timeout(this, activity);
+                result.putString("stream", "OK: " + mode);
+            } else if ("localeJa".equals(mode) || "localeTw".equals(mode) || "localeCn".equals(mode) || "localeEn".equals(mode)
+                || "localeSystem".equals(mode)) {
+                String language = "localeJa".equals(mode) ? "ja" : "localeTw".equals(mode) ? "zh-TW"
+                    : "localeCn".equals(mode) ? "zh-CN" : "localeEn".equals(mode) ? "en" : "system";
+                Locale processLocale = Locale.getDefault();
+                Locale applicationLocale = getTargetContext().getResources().getConfiguration().locale;
+                int titleId = getTargetContext().getResources().getIdentifier("settings_title", "string", getTargetContext().getPackageName());
+                String applicationTitle = getTargetContext().getString(titleId);
+                getTargetContext().getSharedPreferences("desk_clock_prefs", Context.MODE_PRIVATE).edit().clear()
+                    .putString("pref_app_language", language).commit();
+                launch(); LocaleChecks.run(this, activity, language, processLocale, applicationLocale, applicationTitle);
+                result.putString("stream", "OK: isolated Activity locale " + language + " survives real rotation");
+            } else if ("settings".equals(mode)) {
+                getTargetContext().getSharedPreferences("desk_clock_prefs", Context.MODE_PRIVATE).edit().clear().commit();
+                launch(); SettingsChecks.run(this, activity);
+                result.putString("stream", "OK: native settings entry and existing preference schema");
+            } else if ("secondsControls".equals(mode) || "dateReadout".equals(mode)) {
                 getTargetContext().getSharedPreferences("desk_clock_prefs", Context.MODE_PRIVATE).edit().clear().commit();
                 launch();
                 if ("secondsControls".equals(mode)) AccessibilityChecks.seconds(this, activity);
@@ -86,6 +167,9 @@ public class LegacyInstrumentation extends Instrumentation {
             } else if ("artworkChecks".equals(mode)) {
                 ArtworkChecks.run(getTargetContext());
                 result.putString("stream", "OK: all 96 original clock assets available with pre21 bitmap fallback");
+            } else if ("frozenChainStress".equals(mode)) {
+                CertificateChecks.stress(getTargetContext(), getContext());
+                result.putString("stream", "OK: frozen public chain verified 100 times at its capture date");
             } else if ("certificateChecks".equals(mode)) {
                 CertificateChecks.run(getTargetContext(), getContext());
                 result.putString("stream", "OK: 118 root/chain keys decoded and frozen-date PKIX validated five times");
@@ -206,13 +290,55 @@ public class LegacyInstrumentation extends Instrumentation {
         }
         finish(code, result);
     }
-    private void launch() {
+    private void launch() { launch(true); }
+    private void launch(boolean hideGuide) {
+        if (hideGuide) getTargetContext().getSharedPreferences("desk_clock_prefs", Context.MODE_PRIVATE).edit()
+            .putBoolean("pref_dismiss_gesture_tutorial", true).commit();
         Intent launch = getTargetContext().getPackageManager().getLaunchIntentForPackage(getTargetContext().getPackageName());
-        activity = startActivitySync(launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+        Activity previous = resumedActivity;
+        launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
+        runOnMainSync(() -> getTargetContext().startActivity(launch));
+        activity = awaitResumed(launch.getComponent().getClassName(), previous);
         waitForIdleSync();
+    }
+    Activity openSettings(Activity clock) {
+        Activity ready = awaitResumed(clock.getComponentName().getClassName(), null);
+        Button open = ready.getWindow().getDecorView().findViewWithTag("settings");
+        runOnMainSync(() -> open.performClick());
+        return awaitResumed("com.linzin.legacy.LegacySettingsActivity", ready);
+    }
+    Activity awaitResumed(String className, Activity previous) {
+        long deadline = SystemClock.elapsedRealtime() + 10000;
+        Activity[] seen = new Activity[1];
+        boolean[] ready = new boolean[1];
+        do {
+            runOnMainSync(() -> {
+                Activity current = resumedActivity; seen[0] = current;
+                ready[0] = current != null && current != previous && current.getComponentName().getClassName().equals(className)
+                    && !current.isFinishing() && current.getWindow().getDecorView().isShown()
+                    && (current.hasWindowFocus() || visibleDialog(current));
+                if (ready[0] && current instanceof android.preference.PreferenceActivity)
+                    ready[0] = ((android.preference.PreferenceActivity) current).getListView().getAdapter() != null;
+            });
+            if (ready[0]) return seen[0];
+            SystemClock.sleep(50);
+        } while (SystemClock.elapsedRealtime() < deadline);
+        throw new AssertionError("No visible resumed Activity: " + className + "; last=" + seen[0]);
+    }
+    private static boolean visibleDialog(Activity activity) {
+        for (String tag : new String[] { "gesture_guide", "brightness" }) {
+            android.app.Fragment fragment = activity.getFragmentManager().findFragmentByTag(tag);
+            if (fragment instanceof android.app.DialogFragment) {
+                android.app.Dialog dialog = ((android.app.DialogFragment) fragment).getDialog();
+                if (dialog != null && dialog.isShowing()) return true;
+            }
+        }
+        return false;
     }
     private void selectSidebar(int page) {
         getTargetContext().getSharedPreferences("desk_clock_prefs", Context.MODE_PRIVATE).edit()
+            .putBoolean("pref_weather_enabled", page == 1)
+            .putLong("pref_timeout_millis", -1)
             .putString("pref_layout_mode", "DUAL_LEFT_LARGE").putInt("pref_side_page", page)
             .putBoolean("pref_show_calendar_events", true).commit();
     }

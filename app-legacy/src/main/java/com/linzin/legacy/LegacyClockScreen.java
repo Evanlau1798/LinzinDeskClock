@@ -17,11 +17,13 @@ final class LegacyClockScreen extends FrameLayout {
     final LegacyClockView clock;
     final TextView calendarStatus, weatherStatus;
     final Button weatherRefresh;
+    private final LegacyBattery battery;
+    private final LegacyMonthView month;
     private final SharedPreferences prefs;
     private final LinearLayout body, calendarPage, weatherPage, controls;
     private final FrameLayout clockPanel;
     private final ScrollView sidePanel;
-    private final Button timeMode, style, seconds, layout, page, lock;
+    private final Button timeMode, style, seconds, layout, page, lock, settings;
     private final Runnable selectionChanged;
     private final Handler handler = new Handler();
     private final Runnable hideControls;
@@ -44,6 +46,8 @@ final class LegacyClockScreen extends FrameLayout {
         clock = new LegacyClockView(context, prefs.getBoolean("pref_24_hour", false));
         clock.setOnClickListener(view -> showControls());
         clockPanel.addView(clock, new FrameLayout.LayoutParams(-1, -1));
+        battery = new LegacyBattery(context);
+        clockPanel.addView(battery, new FrameLayout.LayoutParams(-2, -2, Gravity.TOP | Gravity.LEFT));
         sidePanel = new ScrollView(context) {
             @Override public boolean onInterceptTouchEvent(android.view.MotionEvent event) {
                 return LegacyClockScreen.this.locked || super.onInterceptTouchEvent(event);
@@ -55,6 +59,7 @@ final class LegacyClockScreen extends FrameLayout {
         LinearLayout sideContent = new LinearLayout(context); sideContent.setOrientation(LinearLayout.VERTICAL);
         sidePanel.addView(sideContent, new ScrollView.LayoutParams(-1, -1));
         calendarPage = new LinearLayout(context); calendarPage.setOrientation(LinearLayout.VERTICAL); calendarPage.setTag("calendar_page");
+        month = new LegacyMonthView(context); calendarPage.addView(month, new LinearLayout.LayoutParams(-1, -2));
         calendarStatus = text("calendar_status", R.string.calendar_empty); calendarPage.addView(calendarStatus);
         weatherPage = new LinearLayout(context); weatherPage.setOrientation(LinearLayout.VERTICAL); weatherPage.setTag("weather_page");
         weatherStatus = text("weather_status", R.string.weather_idle); weatherPage.addView(weatherStatus);
@@ -75,7 +80,9 @@ final class LegacyClockScreen extends FrameLayout {
         });
         page = button("side_page", "", this::toggleSidePage);
         lock = button("ui_lock", "", () -> { this.locked = !this.locked; updateControls(); });
-        addRow(timeMode, style, seconds); addRow(layout, page, lock);
+        settings = button("settings", getResources().getString(R.string.settings_title), () ->
+            context.startActivity(new android.content.Intent(context, LegacySettingsActivity.class)));
+        addRow(timeMode, style, seconds); addRow(layout, page, lock); addRow(settings);
         addView(controls, new FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM));
         clock.setOnTouchListener(new ClockGestures(this, clock, true));
         sidePanel.setOnTouchListener(new ClockGestures(this, sidePanel, false));
@@ -116,6 +123,7 @@ final class LegacyClockScreen extends FrameLayout {
     private void applyPage() {
         calendarPage.setVisibility(sidePage == 0 ? View.VISIBLE : View.GONE);
         weatherPage.setVisibility(sidePage == 1 ? View.VISIBLE : View.GONE);
+        updateAuxiliaryContent();
         updateControls();
     }
     private void toggleTimeMode() {
@@ -161,20 +169,30 @@ final class LegacyClockScreen extends FrameLayout {
         page.setText(sidePage == 0 ? R.string.page_calendar : R.string.page_weather);
         page.setContentDescription(getResources().getString(R.string.switch_page) + ": " + page.getText());
         lock.setText(locked ? R.string.unlock_controls : R.string.lock_controls);
-        for (Button button : new Button[] { timeMode, style, seconds, layout, page }) button.setEnabled(!locked);
+        for (Button button : new Button[] { timeMode, style, seconds, layout, page, settings }) button.setEnabled(!locked);
         page.setEnabled(!locked && layoutMode != ClockLayoutMode.SINGLE);
-        weatherRefresh.setEnabled(!locked && !weatherBusy);
+        weatherRefresh.setEnabled(!locked && !weatherBusy && prefs.getBoolean("pref_weather_enabled", false));
     }
-    boolean isCalendarVisible() { return layoutMode != ClockLayoutMode.SINGLE && sidePage == 0; }
-    boolean isWeatherVisible() { return layoutMode != ClockLayoutMode.SINGLE && sidePage == 1; }
+    boolean isCalendarVisible() { return getVisibility() == View.VISIBLE && layoutMode != ClockLayoutMode.SINGLE && sidePage == 0; }
+    boolean isWeatherVisible() { return getVisibility() == View.VISIBLE && layoutMode != ClockLayoutMode.SINGLE && sidePage == 1; }
     boolean isLocked() { return locked; }
-    void setWeatherBusy(boolean busy) { weatherBusy = busy; weatherRefresh.setEnabled(!locked && !busy); }
+    void reloadPreferences() {
+        layoutMode = ClockLayoutMode.fromPersisted(prefs.getString("pref_layout_mode", "SINGLE"));
+        sidePage = prefs.getInt("pref_side_page", 0) == 1 ? 1 : 0;
+        clock.set24Hour(prefs.getBoolean("pref_24_hour", false)); clock.reloadSettings(); applyLayout();
+    }
+    void setWeatherBusy(boolean busy) { weatherBusy = busy; weatherRefresh.setEnabled(!locked && !busy && prefs.getBoolean("pref_weather_enabled", false)); }
     void showControls() {
         controls.setVisibility(View.VISIBLE); handler.removeCallbacks(hideControls);
         if (active) handler.postDelayed(hideControls, 5000);
     }
-    void resume() { active = true; clock.start(); showControls(); }
-    void pause() { active = false; handler.removeCallbacksAndMessages(null); clock.stop(); }
+    private void updateAuxiliaryContent() {
+        battery.setVisibility(prefs.getBoolean("pref_show_battery", true) ? View.VISIBLE : View.GONE);
+        if (active && battery.getVisibility() == View.VISIBLE) battery.start(); else battery.stop();
+        if (active && isCalendarVisible()) month.start(); else month.stop();
+    }
+    void resume() { active = true; clock.start(); updateAuxiliaryContent(); showControls(); }
+    void pause() { active = false; handler.removeCallbacksAndMessages(null); clock.stop(); battery.stop(); month.stop(); }
     @Override protected void onDetachedFromWindow() { pause(); super.onDetachedFromWindow(); }
     private int dp(float value) { return Math.round(value * getResources().getDisplayMetrics().density); }
 }

@@ -9,8 +9,19 @@ import org.bouncycastle.jce.provider.BouncyCastleProvider;
 
 final class CertificateChecks {
     static void run(Context context, Context testContext) throws Exception {
+        KeyStore roots = roots(context);
+        checkRoots(roots);
+        chain(roots, testContext, 5);
+    }
+    static void stress(Context context, Context testContext) throws Exception {
+        chain(roots(context), testContext, 100);
+    }
+    private static KeyStore roots(Context context) throws Exception {
         KeyStore roots = KeyStore.getInstance("BKS", new BouncyCastleProvider());
         try (InputStream input = context.getAssets().open("mozilla-roots.bks")) { roots.load(input, new char[0]); }
+        return roots;
+    }
+    private static void checkRoots(KeyStore roots) throws Exception {
         int count = 0;
         for (Enumeration<String> aliases = roots.aliases(); aliases.hasMoreElements();) {
             X509Certificate certificate = (X509Certificate) roots.getCertificate(aliases.nextElement());
@@ -22,6 +33,8 @@ final class CertificateChecks {
             count++;
         }
         if (count != 118) throw new AssertionError("Unexpected root count: " + count);
+    }
+    private static void chain(KeyStore roots, Context testContext, int passes) throws Exception {
         try (InputStream input = testContext.getAssets().open("open-meteo-chain.pem")) {
             java.security.cert.CertificateFactory parser = java.security.cert.CertificateFactory.getInstance("X.509", new BouncyCastleProvider());
             java.util.Collection<? extends java.security.cert.Certificate> chain = parser.generateCertificates(input);
@@ -39,7 +52,10 @@ final class CertificateChecks {
             trust.init(new javax.net.ssl.CertPathTrustManagerParameters(parameters));
             javax.net.ssl.X509TrustManager manager = (javax.net.ssl.X509TrustManager) trust.getTrustManagers()[0];
             X509Certificate[] certificates = chain.toArray(new X509Certificate[0]);
-            for (int pass = 0; pass < 5; pass++) manager.checkServerTrusted(certificates, "ECDHE_ECDSA");
+            for (int pass = 0; pass < passes; pass++) {
+                try { manager.checkServerTrusted(certificates, "ECDHE_ECDSA"); }
+                catch (Exception error) { throw new RuntimeException("Frozen-chain PKIX pass " + pass, error); }
+            }
         }
     }
 }

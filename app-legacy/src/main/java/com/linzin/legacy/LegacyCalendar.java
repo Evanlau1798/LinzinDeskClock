@@ -8,7 +8,6 @@ import android.net.Uri;
 import android.provider.CalendarContract;
 import java.text.SimpleDateFormat;
 import java.util.Date;
-import java.util.Locale;
 import java.util.TimeZone;
 
 final class LegacyCalendar {
@@ -36,7 +35,7 @@ final class LegacyCalendar {
                 String title = cursor.getString(cursor.getColumnIndexOrThrow("title"));
                 long begin = cursor.getLong(cursor.getColumnIndexOrThrow("begin"));
                 boolean allDay = cursor.getInt(cursor.getColumnIndexOrThrow("allDay")) != 0;
-                SimpleDateFormat format = new SimpleDateFormat(allDay ? "M/d" : "M/d HH:mm", Locale.getDefault());
+                SimpleDateFormat format = new SimpleDateFormat(allDay ? "M/d" : "M/d HH:mm", context.getResources().getConfiguration().locale);
                 if (allDay) format.setTimeZone(TimeZone.getTimeZone("UTC"));
                 if (result.length() > 0) result.append('\n');
                 result.append(format.format(new Date(begin))).append(" · ").append(title == null || title.length() == 0

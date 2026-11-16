@@ -1,16 +1,20 @@
 # Legacy implementation
 
 This isolated implementation targets **API 14** and **API 19** with one minSdk 14
-APK. Clock and layout integration follows the accepted feasibility slice;
+APK. Clock, layout and native settings integration follow the feasibility slice;
 the remaining features below are still in progress. This is not an API14-FULL
 or API19-CONSERVATIVE product release.
 The modern `app` keeps minSdk 21. The two renderers actually share Java 8
-`clock-core` hand-angle calculations and persisted layout names.
+`clock-core` hand-angle calculations, persisted layout names and month-grid rules.
 
 API19 debug fixtures at 2026-02-28 13:05:09 UTC (uniform cells, not device layouts):
 
 ![Eight styles in 24-hour format](../docs/images/legacy-eight-styles-24h.png)
 ![Eight styles in 12-hour format](../docs/images/legacy-eight-styles-12h.png)
+
+Native settings on API19 (480x800):
+
+![Native settings on API19](../docs/images/legacy-native-settings-api19.png)
 
 Original feasibility release screenshots (before the eight-style integration):
 
@@ -26,20 +30,29 @@ an experimental identity; final signing and upgrade policy remain release work.
 
 | Capability | This slice | Full implementation still required |
 | --- | --- | --- |
-| Clock | Original three digital, three analog and two flip styles; animated seconds/flip; wall time, date; fixed-time fixtures | Remaining settings UI and final hardware acceptance |
-| Settings | Persistent 12/24-hour display and per-family style/seconds state | Language selector, units, brightness, rotation, timeout, tutorials |
-| Layout | Single and mirrored 70/30 dual panes, sidebar pages, touch lock, tap/double-tap/two-finger/vertical swipe controls | Remaining content/settings panels |
-| Calendar | Three upcoming entries in seven days; explicit off/permission/empty/error states; read-only visible-page worker | Month view and permission/settings UI |
-| Weather | Manual HTTPS current temperature from saved valid coordinates, stale/error labeling | Live location, geocoding integration, four forecasts, complete persistence |
-| Other | Foreground animation and cleanup | Battery, update UI, capability notices and full lifecycle matrix |
+| Clock | Original three digital, three analog and two flip styles; animated seconds/flip; wall time, date; fixed-time fixtures | Final hardware acceptance |
+| Settings | Persistent time/style/seconds, five language choices, units, window brightness, 180-degree content rotation, timeout and first-run/reopenable guide | Final integration and hardware acceptance |
+| Layout | Single and mirrored 70/30 dual panes, sidebar pages, touch lock, tap/double-tap/two-finger/vertical swipe controls | Remaining weather/update content |
+| Calendar | Month grid and three upcoming entries in seven days; explicit off/permission/empty/error states; read-only visible-page worker; runtime permission flow on API23+ | Final data integration |
+| Weather | Opt-in manual HTTPS current temperature from saved valid coordinates; cached Celsius/Fahrenheit conversion, data time and stale/error labeling | Live location, geocoding integration, four forecasts, complete persistence |
+| Other | Foreground animation/receiver cleanup, battery level/charging status and explicit capability notices | Update UI and full lifecycle matrix |
 | Quality | API14/19 emulator, R8/v1, network trust boundary probes | Old ARM hardware budgets, upgrades, soak and final release gates |
 
 RuntimeShader and fold/cutout capabilities are not provided by this slice.
 Do not treat a missing general feature as an accepted platform downgrade.
-Fresh installs start with a single clock and recent events off. Calendar settings
-are currently seeded by the test fixture; the full settings UI is a later work
-package. Hidden pages cancel their work and reject late results. A cancelled
+Fresh installs start with a single clock and recent events/weather off. Enabling
+either data feature in settings exposes a dual pane. Calendar access requires
+installation permission on API14/19 and user approval on API23+. Hidden pages
+cancel their work and reject late results. A cancelled
 weather request returns to its cached or idle state.
+
+Language changes recreate Activity resources without changing the process or
+application locale. Brightness applies only to the clock window and is released
+on pause. A timeout shorter than the system timeout uses a black wakeable cover;
+longer choices hand control back to the system for real display sleep. The first
+wake touch is consumed. Never-timeout mode restores the display flag on return
+from Home. The 180-degree option rotates content while retaining the clock's
+display orientation, including reverse portrait and landscape.
 
 Clock artwork comes directly from the modern module's 96 vector sources.
 The Gradle Variant API registers the generated resources; Android's build-time
@@ -75,6 +88,8 @@ Do not check a keystore or its passwords into Git.
 
 The runner checks the real API number and APK hashes, then exercises all eight
 public styles, persisted settings, single/dual layouts, rotation, gestures/lock,
+language selection, brightness-dialog rotation, Home/timeout restoration,
+first-run help, battery/month content and cached temperature units,
 an owned CalendarProvider fixture and its off state, real Open-Meteo JSON,
 TLS positive/negative controls and cancellation after hiding weather.
 It fails on unavailable live services and
@@ -88,7 +103,8 @@ API14 has no CancellationSignal query API: late cursors are closed and discarded
 an in-flight CalendarProvider Binder operation cannot be forcibly interrupted.
 
 For debug-only internal boundary probes, use the same native instrumentation
-with `-e mode clockStyles`, `displayChecks`, `dateReadout`, `calendarChecks` or `socketChecks`.
+with `-e mode clockStyles`, `displayChecks`, `dateReadout`, `calendarChecks`,
+`batteryChecks`, `monthChecks` or `socketChecks`.
 `directTls12` and `directTls13` isolate a verified provider handshake from the
 platform URLConnection adapter; they do not change the product protocol policy.
 Clock fixtures use the same UTC time in all eight styles, both time formats,
@@ -103,6 +119,8 @@ above also works against R8 release builds.
 normally verified public Open-Meteo chain at its capture date. It also works
 on release because BC registration classes are retained. This broad key audit
 is slow on the API14 ARM emulator and is a diagnostic, not a per-change gate.
+`frozenChainStress` repeats that frozen chain's PKIX validation 100 times without
+the broad root-key audit; it isolates certificate processing from live transport.
 
 ## TLS and frozen inputs
 
@@ -149,3 +167,9 @@ emulator. An API15 image is not an API14 test substitute.
 Emulators establish OS compatibility for exercised paths. They do not establish
 old ARM performance, battery life, frame budgets, full feature parity or final
 signing/upgrade/soak acceptance. Those remain separate gates.
+
+An API19 live run rejected a trusted chain during BC ECDSA verification with
+`IllegalStateException: Invalid result`. The identical frozen chain passed 100
+offline checks and a later live request succeeded; the cause remains unresolved.
+Earlier handshake timeouts also remain unexplained. Validation stays strict,
+and these successful controls do not establish that either fault is fixed.

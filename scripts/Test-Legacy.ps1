@@ -38,6 +38,7 @@ foreach ($path in @($Apk, $testApk, $fixtureApk, $Adb)) {
 }
 $api = (Invoke-Adb @('shell', 'getprop', 'ro.build.version.sdk')).Trim()
 if ($api -notin @('14', '19')) { throw "This matrix requires API14 or API19; got $api" }
+$null = Invoke-Adb @('shell', 'input', 'keyevent', '82')
 Write-Host "Candidate SHA256: $((Get-FileHash -LiteralPath $Apk -Algorithm SHA256).Hash)"
 Write-Host "Test SHA256: $((Get-FileHash -LiteralPath $testApk -Algorithm SHA256).Hash)"
 Install-Apk $Apk
@@ -53,6 +54,20 @@ try {
     Invoke-Case 'gestures'
     Invoke-Case 'twoFingerOrder'
     Invoke-Case 'secondsControls'
+    Invoke-Case 'tutorial'
+    Invoke-Case 'settings'
+    Invoke-Case 'languageSettings'
+    Invoke-Case 'brightnessSettings'
+    Invoke-Case 'windowSettings'
+    Invoke-Case 'reverseRotation'
+    Invoke-Case 'reversePortrait'
+    Invoke-Case 'flipLanguage'
+    Invoke-Case 'timeoutSettings'
+    Invoke-Case 'longTimeoutSettings'
+    Invoke-Case 'battery'
+    Invoke-Case 'month'
+    Invoke-Case 'weatherSettings'
+    foreach ($mode in @('localeJa', 'localeTw', 'localeCn', 'localeEn', 'localeSystem')) { Invoke-Case $mode }
     Invoke-Fixture 'create'
     Invoke-Case 'calendar'
     Invoke-Case 'calendarOff'
