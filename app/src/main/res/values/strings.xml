@@ -151,4 +151,6 @@
     <string name="weather_location_source_gps">GPS</string>
     <string name="weather_location_source_network">Network</string>
     <string name="weather_location_source_passive">Passive</string>
+    <string name="display_switch_unavailable">Cover-display switching could not be confirmed. Ordinary clock mode remains available.</string>
+    <string name="display_reset_failed">Display restoration could not be confirmed. Check your device display state.</string>
 </resources>

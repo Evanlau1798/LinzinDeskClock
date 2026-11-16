@@ -154,6 +154,9 @@ import kotlin.math.roundToInt
 import kotlin.math.sin
 import kotlin.random.Random
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -285,21 +288,6 @@ fun getCurrentLanguageTag(context: Context): String {
         }
     }
     return currentAppLocaleTag
-}
-
-/**
- * 非同步發送 Shell 指令至系統（如調用 cmd device_state）
- */
-fun executeShellCommand(command: String) {
-    CoroutineScope(Dispatchers.IO).launch {
-        try {
-            val process = ProcessBuilder("sh", "-c", command).start()
-            process.waitFor()
-            Log.d("FoldDeskClock", "Executed: $command")
-        } catch (e: Exception) {
-            Log.e("FoldDeskClock", "Failed: $command", e)
-        }
-    }
 }
 
 /**
@@ -5566,24 +5554,60 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         }
     }
 
-    /**
-     * 安全釋放全域覆寫鎖定 (Reset Device State)
-     * 針對 HONOR (MagicOS) 採用雙重間隔補發機制以確保退出鎖死
-     */
-    private fun safelyResetDeviceState() {
-        CoroutineScope(Dispatchers.IO).launch {
-            try {
-                val p1 = ProcessBuilder("sh", "-c", "cmd device_state state reset").start()
-                p1.waitFor()
-                Log.d("FoldDeskClock", "Executed: cmd device_state state reset")
+    private val deviceStateScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private val deviceStateOwner = Any()
+    private var deviceStateJob: Job? = null
+    private var deviceStateGeneration = 0L
+    private var deviceStateMayBeOverridden = false
+    private var deviceStateDestroyed = false
 
-                if (isHonorDevice) {
-                    delay(120L)
-                    val p2 = ProcessBuilder("sh", "-c", "cmd device_state state reset").start()
-                    p2.waitFor()
+    private fun reportDeviceStateResetFailure() {
+        Log.w("FoldDeskClock", "Device state restoration could not be confirmed")
+        Toast.makeText(applicationContext, R.string.display_reset_failed, Toast.LENGTH_LONG).show()
+    }
+
+    private fun requestRearDisplayState() {
+        if (deviceStateDestroyed) return
+        val ticket = ++deviceStateGeneration
+        deviceStateJob?.cancel()
+        isRearDisplayActive = false
+        deviceStateJob = deviceStateScope.launch {
+            var resetFailed = false
+            val confirmed = DeviceStateTransitions.request(deviceStateOwner) {
+                deviceStateMayBeOverridden = true
+                switchAndConfirmDeviceState(targetStateId, repeatReset = isHonorDevice,
+                    onResetFailure = { resetFailed = true; reportDeviceStateResetFailure() })
+            }
+            if (ticket == deviceStateGeneration) {
+                isRearDisplayActive = confirmed
+                if (!confirmed) {
+                    deviceStateMayBeOverridden = resetFailed
+                    if (!resetFailed) Toast.makeText(applicationContext,
+                        R.string.display_switch_unavailable, Toast.LENGTH_LONG).show()
                 }
-            } catch (e: Exception) {
-                Log.e("FoldDeskClock", "Failed to reset device state", e)
+            }
+        }
+    }
+
+    private fun safelyResetDeviceState(finalCleanup: Boolean = false) {
+        if (deviceStateDestroyed) return
+        if (finalCleanup) deviceStateDestroyed = true
+        val ticket = ++deviceStateGeneration
+        deviceStateJob?.cancel()
+        isRearDisplayActive = false
+        if (!deviceStateMayBeOverridden) {
+            if (finalCleanup) deviceStateScope.cancel()
+            return
+        }
+        deviceStateJob = deviceStateScope.launch {
+            try {
+                val restored = DeviceStateTransitions.release(deviceStateOwner) { resetAndConfirmDeviceState(repeatReset = isHonorDevice) }
+                if (ticket == deviceStateGeneration) {
+                    deviceStateMayBeOverridden = !restored
+                    if (!restored) reportDeviceStateResetFailure()
+                }
+            } finally {
+                if (finalCleanup) deviceStateScope.cancel()
             }
         }
     }
@@ -5844,7 +5868,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     override fun onDestroy() {
         super.onDestroy()
         setImmersiveMode(window, false)
-        safelyResetDeviceState()
+        safelyResetDeviceState(finalCleanup = true)
     }
 
     override fun onSensorChanged(event: SensorEvent?) {
@@ -5902,8 +5926,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
 
                     val needsStateOverride = !isTallAspectRatio() || !isRearDisplayActive
                     if (needsStateOverride) {
-                        isRearDisplayActive = true
-                        executeShellCommand("cmd device_state state $targetStateId")
+                        requestRearDisplayState()
                     }
 
                     triggerImmersiveCleanUp()

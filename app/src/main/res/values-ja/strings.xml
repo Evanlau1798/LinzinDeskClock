@@ -151,4 +151,6 @@
     <string name="weather_location_source_gps">GPS</string>
     <string name="weather_location_source_network">ネットワーク</string>
     <string name="weather_location_source_passive">パッシブ</string>
+    <string name="display_switch_unavailable">外側ディスプレイの切り替えを確認できません。通常の時計モードを利用できます。</string>
+    <string name="display_reset_failed">ディスプレイ状態の復元を確認できません。端末の表示状態を確認してください。</string>
 </resources>

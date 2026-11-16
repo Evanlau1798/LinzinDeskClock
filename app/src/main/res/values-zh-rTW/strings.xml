@@ -151,4 +151,6 @@
     <string name="weather_location_source_gps">GPS</string>
     <string name="weather_location_source_network">網路</string>
     <string name="weather_location_source_passive">被動定位</string>
+    <string name="display_switch_unavailable">無法確認外螢幕切換成功，仍可使用一般時鐘模式。</string>
+    <string name="display_reset_failed">無法確認顯示狀態已還原，請檢查裝置的顯示狀態。</string>
 </resources>

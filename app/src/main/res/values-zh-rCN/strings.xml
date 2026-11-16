@@ -152,4 +152,6 @@
     <string name="weather_location_source_gps">GPS</string>
     <string name="weather_location_source_network">网络</string>
     <string name="weather_location_source_passive">被动定位</string>
+    <string name="display_switch_unavailable">无法确认外屏切换成功，仍可使用普通时钟模式。</string>
+    <string name="display_reset_failed">无法确认显示状态已恢复，请检查设备的显示状态。</string>
 </resources>
