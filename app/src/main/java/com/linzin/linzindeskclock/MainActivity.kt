@@ -520,33 +520,26 @@ suspend fun fetchBestLocation(context: Context): Location? = withContext(Dispatc
         if (providers.isEmpty()) return@withContext lastLocation
 
         withTimeoutOrNull(6000L) {
-            suspendCancellableCoroutine<Location?> { cont ->
-                val listener = object : android.location.LocationListener {
-                    override fun onLocationChanged(location: Location) {
-                        if (!isValidLocation(location)) return // 忽略剛啟動時的 0.0 座標
-                        locationManager.removeUpdates(this)
-                        if (cont.isActive) cont.resume(location)
+            var listener: android.location.LocationListener? = null
+            awaitLegacyLocation(
+                providers, lastLocation,
+                register = { provider, callback ->
+                    if (listener == null) listener = object : android.location.LocationListener {
+                        override fun onLocationChanged(location: Location) {
+                            if (isValidLocation(location)) callback(location)
+                        }
+                        @Deprecated("Deprecated in Java")
+                        override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) {}
+                        override fun onProviderEnabled(provider: String) {}
+                        override fun onProviderDisabled(provider: String) {}
                     }
-                    @Deprecated("Deprecated in Java")
-                    override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) {}
-                    override fun onProviderEnabled(provider: String) {}
-                    override fun onProviderDisabled(provider: String) {}
-                }
-
-                try {
-                    providers.forEach { provider ->
-                        locationManager.requestLocationUpdates(
-                            provider, 0L, 0f, listener, android.os.Looper.getMainLooper()
-                        )
-                    }
-                } catch (_: Exception) {
-                    if (cont.isActive) cont.resume(lastLocation)
-                }
-
-                cont.invokeOnCancellation {
-                    try { locationManager.removeUpdates(listener) } catch (_: Exception) {}
-                }
-            }
+                    locationManager.requestLocationUpdates(
+                        provider, 0L, 0f, listener!!, android.os.Looper.getMainLooper()
+                    )
+                },
+                remove = { listener?.let { locationManager.removeUpdates(it) } },
+                onCleanupError = { Log.w("DeskClockLocation", "Unable to remove location listener", it) }
+            )
         } ?: lastLocation
     }
 }
