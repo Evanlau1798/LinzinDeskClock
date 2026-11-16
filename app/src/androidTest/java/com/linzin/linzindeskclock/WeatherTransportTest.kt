@@ -142,6 +142,40 @@ class WeatherTransportTest {
         assertEquals(1, disconnects)
     }
 
+    @Test
+    fun noLocationStopsAllRemoteLookups() = runBlocking {
+        var replied = false
+        var result: WeatherInfo? = null
+        fetchAndApplyWeather(contextWithNoLocation(), "Current location", systemGeocode = { _, _ ->
+            fail("Geocoding must not run without a location")
+            null
+        }) { replied = true; result = it }
+        assertTrue(replied)
+        assertNull(result)
+        assertTrue(requests.isEmpty())
+    }
+
+    @Test
+    fun invalidSavedCoordinatesStopRemoteLookups() = runBlocking {
+        val context = contextWithNoLocation(savedLocation = true)
+        context.getSharedPreferences("desk_clock_prefs", Context.MODE_PRIVATE).edit()
+            .putString("pref_last_valid_lat", "NaN").commit()
+        var result: WeatherInfo? = null
+        fetchAndApplyWeather(context, "Current location", systemGeocode = { _, _ -> null }) { result = it }
+        assertNull(result)
+        assertTrue(requests.isEmpty())
+    }
+
+    @Test
+    fun validSavedCoordinatesStillLoadWeather() = runBlocking {
+        var result: WeatherInfo? = null
+        fetchAndApplyWeather(contextWithNoLocation(savedLocation = true), "Current location",
+            systemGeocode = { _, _ -> null }) { result = it }
+        assertEquals("Fixture City", result!!.cityName)
+        assertEquals(21f, result!!.currentTempC)
+        assertTrue(requests.any { it.host == "api.open-meteo.com" })
+    }
+
     private fun contextWithNoLocation(savedLocation: Boolean = false): Context {
         val target = InstrumentationRegistry.getInstrumentation().targetContext
         target.getSharedPreferences("desk_clock_prefs", Context.MODE_PRIVATE).edit().clear().commit()
