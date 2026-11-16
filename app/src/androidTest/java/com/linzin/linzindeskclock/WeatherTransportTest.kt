@@ -119,14 +119,14 @@ class WeatherTransportTest {
 
     @Test
     fun noSystemOrSavedLocationNeverUsesCleartextIpLookup() = runBlocking {
-        fetchAndApplyWeather(contextWithNoLocation(), "Current location", systemGeocode = { _, _ -> null }) {}
+        loadWeather(contextWithNoLocation(), "Current location", systemGeocode = { _, _ -> null })
         assertTrue("No request may use cleartext", requests.none { it.protocol == "http" })
     }
 
     @Test
     fun reverseGeocodingCertificateFailureNeverUsesHttp() = runBlocking {
         failure = SSLHandshakeException("untrusted reverse-geocoding certificate")
-        fetchAndApplyWeather(contextWithNoLocation(savedLocation = true), "Current location", systemGeocode = { _, _ -> null }) {}
+        loadWeather(contextWithNoLocation(savedLocation = true), "Current location", systemGeocode = { _, _ -> null })
         assertTrue(requests.any { it.host == "api.bigdatacloud.net" })
         assertTrue("No request may use cleartext", requests.all { it.protocol == "https" })
     }
@@ -135,7 +135,7 @@ class WeatherTransportTest {
     fun reverseGeocodingCancellationReachesOwner() = runBlocking {
         failure = CancellationException("cancelled reverse-geocoding")
         try {
-            fetchAndApplyWeather(contextWithNoLocation(savedLocation = true), "Current location", systemGeocode = { _, _ -> null }) {}
+            loadWeather(contextWithNoLocation(savedLocation = true), "Current location", systemGeocode = { _, _ -> null })
             fail("Cancellation must reach the owner")
         } catch (_: CancellationException) {
             assertEquals(listOf("api.bigdatacloud.net"), requests.map { it.host })
@@ -153,13 +153,10 @@ class WeatherTransportTest {
 
     @Test
     fun noLocationStopsAllRemoteLookups() = runBlocking {
-        var replied = false
-        var result: WeatherInfo? = null
-        fetchAndApplyWeather(contextWithNoLocation(), "Current location", systemGeocode = { _, _ ->
+        val result = loadWeather(contextWithNoLocation(), "Current location", systemGeocode = { _, _ ->
             fail("Geocoding must not run without a location")
             null
-        }) { replied = true; result = it }
-        assertTrue(replied)
+        })
         assertNull(result)
         assertTrue(requests.isEmpty())
     }
@@ -169,17 +166,15 @@ class WeatherTransportTest {
         val context = contextWithNoLocation(savedLocation = true)
         context.getSharedPreferences("desk_clock_prefs", Context.MODE_PRIVATE).edit()
             .putString("pref_last_valid_lat", "NaN").commit()
-        var result: WeatherInfo? = null
-        fetchAndApplyWeather(context, "Current location", systemGeocode = { _, _ -> null }) { result = it }
+        val result = loadWeather(context, "Current location", systemGeocode = { _, _ -> null })
         assertNull(result)
         assertTrue(requests.isEmpty())
     }
 
     @Test
     fun validSavedCoordinatesStillLoadWeather() = runBlocking {
-        var result: WeatherInfo? = null
-        fetchAndApplyWeather(contextWithNoLocation(savedLocation = true), "Current location",
-            systemGeocode = { _, _ -> null }) { result = it }
+        val result = loadWeather(contextWithNoLocation(savedLocation = true), "Current location",
+            systemGeocode = { _, _ -> null })
         assertEquals("Fixture City", result!!.cityName)
         assertEquals(21f, result!!.currentTempC)
         assertEquals(25.0, result!!.location!!.latitude, 0.0)
@@ -196,8 +191,7 @@ class WeatherTransportTest {
             .putString("pref_last_location_provider", "gps")
             .putString("pref_last_location_observed_at", "2000").commit()
         repeat(2) {
-            var result: WeatherInfo? = null
-            fetchAndApplyWeather(context, "Current location", systemGeocode = { _, _ -> null }) { result = it }
+            val result = loadWeather(context, "Current location", systemGeocode = { _, _ -> null })
             assertEquals(1000L, result!!.location!!.fixTimeMillis)
             assertEquals("gps", result!!.location!!.provider)
             assertEquals(2000L, result!!.location!!.observedAtMillis)
