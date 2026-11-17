@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import socket
 import subprocess
 import time
@@ -24,7 +25,7 @@ def preference_metadata(line):
 def restore_preferences(adb, preferences, out):
     for remote, saved in preferences.items():
         if saved is None:
-            adb("shell", "rm", "-f", remote)
+            remove_file(adb, remote)
         else:
             local, metadata = saved
             adb("push", str(local), remote)
@@ -37,12 +38,41 @@ def restore_preferences(adb, preferences, out):
             assert verified.read_bytes() == local.read_bytes(), "Preferences were not restored"
 
 
+def remove_file(adb, remote):
+    # API14 toolbox lacks rm -f and test; old adb also loses the remote exit status.
+    quoted = shlex.quote(remote)
+    confirmed = adb("shell", "rm " + quoted + " 2>/dev/null; ls -d " + quoted + " >/dev/null 2>&1 || echo LINZIN_REMOVED")
+    assert confirmed.strip() == "LINZIN_REMOVED", "File removal was not confirmed: " + remote
+
 
 def check_runtime(logs, previous_marker, marker, pid, package):
     assert previous_marker and marker in logs and previous_marker in logs, "Native log coverage gap"
     interval = logs.split(previous_marker, 1)[1]
     assert "ANR in " + package not in interval
     assert not re.search(r"E/AndroidRuntime\(\s*" + str(pid) + r"\):.*FATAL EXCEPTION", interval)
+
+
+def check_memory(state):
+    assert state.get("phase") == "observing", "Memory observations require the active clock phase"
+    for key, limit in (("heap_used_bytes", 64 * 1024 * 1024), ("pss_kib", 80 * 1024)):
+        value = state.get(key)
+        assert type(value) is int and 0 < value <= limit, "Missing, invalid or over-budget " + key + ": " + repr(value)
+
+
+def check_memory_coverage(samples, started_ms, duration_ms):
+    assert type(started_ms) is int and type(duration_ms) is int and 0 <= started_ms < duration_ms
+    samples = list(samples)
+    assert all(type(value) is int and started_ms <= value <= duration_ms for value in samples)
+    times = sorted(set(samples))
+    assert len(times) >= 2, "At least two distinct memory observations required"
+    boundaries = [started_ms] + times + [duration_ms]
+    assert all(after - before <= 90000 for before, after in zip(boundaries, boundaries[1:])), "Memory observation coverage gap exceeds 90 seconds"
+
+
+def installed_package_path(output):
+    paths = [line.removeprefix("package:") for line in output.splitlines() if line.startswith("package:")]
+    assert len(paths) == 1 and paths[0].startswith("/"), "Expected one absolute installed APK path"
+    return paths[0]
 
 
 def main():
@@ -139,12 +169,12 @@ def main():
             preferences[remote] = None
         else:
             preferences[remote] = (local, preference_metadata(adb("shell", "ls", "-l", remote)))
-    installed = adb("shell", "pm", "path", package).strip().removeprefix("package:")
+    installed = installed_package_path(adb("shell", "pm", "path", package))
     adb("pull", installed, str(out / "installed.apk"), timeout=45)
     digest = hashlib.sha256(args.apk.read_bytes()).hexdigest()
     assert hashlib.sha256((out / "installed.apk").read_bytes()).hexdigest() == digest
     for name in ("linzin-soak-phase.json", "linzin-soak-result.json", "linzin-soak-ack.txt", "linzin-soak-ack.pending"):
-        adb("shell", "rm", "-f", cache + name)
+        remove_file(adb, cache + name)
 
     started = time.monotonic()
     clock_changed = False
@@ -153,6 +183,7 @@ def main():
     previous_marker = "LINZIN_CONTROLLED_BEGIN_" + str(time.time_ns())
     adb("shell", "log", "-t", "LinzinSoak", previous_marker)
     sample_index = 0
+    observed_times = set()
     next_sample = 0.0
     completed_result = None
     child_log = (out / "instrumentation.log").open("wb")
@@ -169,6 +200,7 @@ def main():
                 (out / "native-result.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
                 assert nonce and result["nonce"] == nonce and result["status"] == "PASS", result
                 assert result["duration_ms"] >= 1800000 and time.monotonic() - started >= 1800
+                check_memory_coverage(observed_times, result["observing_started_ms"], result["duration_ms"])
                 final_logs = adb("logcat", "-d", "-v", "time", "AndroidRuntime:E", "ActivityManager:I", "LinzinSoak:I", "*:S")
                 (out / "runtime-final.txt").write_text(final_logs, encoding="utf-8")
                 check_runtime(final_logs, previous_marker, previous_marker, result["pid"], package)
@@ -229,6 +261,10 @@ def main():
                 adb("shell", "log", "-t", "LinzinSoak", marker)
                 logs = adb("logcat", "-d", "-v", "time", "AndroidRuntime:E", "ActivityManager:I", "LinzinSoak:I", "*:S")
                 (out / ("runtime-%03d.txt" % sample_index)).write_text(logs, encoding="utf-8")
+                (out / ("state-%03d.json" % sample_index)).write_text(json.dumps(state, indent=2), encoding="utf-8")
+                if phase == "observing":
+                    check_memory(state)
+                    observed_times.add(state["elapsed_ms"])
                 check_runtime(logs, previous_marker, marker, state["pid"], package)
                 previous_marker = marker
                 sample_index += 1

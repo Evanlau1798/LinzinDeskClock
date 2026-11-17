@@ -26,7 +26,7 @@ final class LegacySoakChecks {
     private static void seed(Context context) {
         context.getSharedPreferences("desk_clock_prefs", 0).edit().clear()
             .putString("pref_app_language", "en").putBoolean("pref_24_hour", true)
-            .putInt("pref_main_page", 0).putBoolean("pref_digital_show_sec", true)
+            .putInt("pref_main_page", 1).putInt("pref_analog_style_idx", 1).putBoolean("pref_analog_show_sec", true)
             .putBoolean("pref_show_corner_date", true).putLong("pref_timeout_millis", -1)
             .putString("pref_layout_mode", "DUAL_LEFT_LARGE").putInt("pref_side_page", 1)
             .putBoolean("pref_weather_enabled", true).putBoolean("pref_show_calendar_events", false)
@@ -40,9 +40,12 @@ final class LegacySoakChecks {
         Map<String, ?> previous = context.getSharedPreferences("desk_clock_prefs", 0).getAll();
         long began = SystemClock.elapsedRealtime(), wallBegan = System.currentTimeMillis();
         JSONObject result = new JSONObject().put("nonce", nonce).put("pid", Process.myPid())
-            .put("initial_stat", processStat()).put("weather_transport", "controlled URLConnection fixture; not live HTTPS");
+            .put("initial_stat", processStat()).put("clock_style", "OET")
+            .put("memory_class_mib", ((android.app.ActivityManager) context.getSystemService(Context.ACTIVITY_SERVICE)).getMemoryClass())
+            .put("weather_transport", "controlled URLConnection fixture; not live HTTPS");
         try {
             seed(context); ForecastDataChecks.install(); test.launch();
+            checkClock(test, test.activity);
             Activity activity = test.activity;
             ForecastDataChecks.run(test, activity);
             String initial = text(test, activity, "weather_status");
@@ -60,6 +63,7 @@ final class LegacySoakChecks {
             phase(test, cache, "power-ready", began);
             test.runOnMainSync(() -> test.getTargetContext().startActivity(launch));
             waitFor(() -> keepsOn(test, activity) && activity.hasWindowFocus(), "Real screen wake must restore the clock");
+            checkClock(test, activity);
             result.put("power", true);
 
             ForecastDataChecks.networkAvailable = false;
@@ -87,16 +91,17 @@ final class LegacySoakChecks {
                 "Controller must restore the original wall-clock timeline");
 
             int samples = 0;
+            result.put("observing_started_ms", SystemClock.elapsedRealtime() - began);
             while (SystemClock.elapsedRealtime() - began < DURATION) {
-                check(!activity.isFinishing() && keepsOn(test, activity), "Foreground clock must remain active");
-                String before = readout(test, activity);
-                long tickDeadline = SystemClock.elapsedRealtime() + 5000;
-                while (before.equals(readout(test, activity)) && SystemClock.elapsedRealtime() < tickDeadline) SystemClock.sleep(100);
-                check(!before.equals(readout(test, activity)), "Real clock must keep advancing");
+                checkActiveClock(test, activity);
                 Debug.MemoryInfo memory = new Debug.MemoryInfo(); Debug.getMemoryInfo(memory);
+                long heap = Runtime.getRuntime().totalMemory() - Runtime.getRuntime().freeMemory();
+                checkMemory(heap, memory.getTotalPss());
                 write(cache, "linzin-soak-phase.json", new JSONObject().put("nonce", nonce).put("phase", "observing")
                     .put("elapsed_ms", SystemClock.elapsedRealtime() - began).put("pid", Process.myPid())
-                    .put("pss_kib", memory.getTotalPss()).put("readout", readout(test, activity)).toString());
+                    .put("pss_kib", memory.getTotalPss())
+                    .put("heap_used_bytes", heap)
+                    .put("readout", readout(test, activity)).toString());
                 samples++;
                 SystemClock.sleep(28000);
             }
@@ -184,7 +189,23 @@ final class LegacySoakChecks {
         return now.get(Calendar.YEAR) == year && now.get(Calendar.MONTH) == month && now.get(Calendar.DAY_OF_MONTH) == day
             && readout(test, activity).contains(label);
     }
-    static void fixtureChecks() throws Exception {
+    private static void checkClock(LegacyInstrumentation test, Activity activity) {
+        check("OET".equals(text(test, activity, "clock_style")), "Soak must exercise the OET analog dial cache");
+        check(readout(test, activity).matches(".*[0-9]{2}:[0-9]{2}:[0-9]{2}.*"), "Soak must animate seconds");
+    }
+    private static void checkActiveClock(LegacyInstrumentation test, Activity activity) {
+        checkClock(test, activity);
+        check(!activity.isFinishing() && keepsOn(test, activity), "Foreground clock must remain active");
+        String before = readout(test, activity);
+        long tickDeadline = SystemClock.elapsedRealtime() + 5000;
+        while (before.equals(readout(test, activity)) && SystemClock.elapsedRealtime() < tickDeadline) SystemClock.sleep(100);
+        check(!before.equals(readout(test, activity)), "Real clock must keep advancing");
+    }
+    private static void checkMemory(long heap, int pss) {
+        check(heap > 0 && heap <= 64L * 1024 * 1024, "Native heap sample exceeds 64 MiB budget");
+        check(pss > 0 && pss <= 80 * 1024, "Native PSS sample exceeds 80 MiB budget");
+    }
+    static void fixtureChecks(LegacyInstrumentation test) throws Exception {
         ForecastDataChecks.install();
         ForecastDataChecks.networkAvailable = false;
         HttpsURLConnection offline = (HttpsURLConnection) new URL("https://api.open-meteo.com/v1/forecast").openConnection();
@@ -204,5 +225,20 @@ final class LegacySoakChecks {
         ForecastDataChecks.temperatureC = 27;
         double actual = new JSONObject(ForecastDataChecks.body()).getJSONObject("current").getDouble("temperature_2m");
         if (actual != 27) throw new AssertionError("Reconnected fixture must supply distinguishable new weather: " + actual);
+        seed(test.getTargetContext()); test.launch(); checkClock(test, test.activity);
+        checkActiveClock(test, test.activity);
+        test.runOnMainSync(() -> ((Button) test.activity.getWindow().getDecorView().findViewWithTag("clock_style")).performClick());
+        boolean rejected = false;
+        try { checkActiveClock(test, test.activity); }
+        catch (AssertionError expected) { rejected = expected.getMessage().contains("OET"); }
+        check(rejected, "Observation must reject a clock style changed after resume");
+        checkMemory(64L * 1024 * 1024, 80 * 1024);
+        long[][] invalid = {{0, 1}, {1, 0}, {64L * 1024 * 1024 + 1, 1}, {1, 80 * 1024 + 1}};
+        for (long[] sample : invalid) {
+            boolean denied = false;
+            try { checkMemory(sample[0], (int) sample[1]); }
+            catch (AssertionError expected) { denied = true; }
+            check(denied, "Native sample must reject missing or over-budget memory");
+        }
     }
 }
