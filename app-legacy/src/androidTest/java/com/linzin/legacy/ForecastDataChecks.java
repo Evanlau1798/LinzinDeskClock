@@ -17,6 +17,8 @@ import org.json.JSONObject;
 
 final class ForecastDataChecks {
     static volatile int weatherRequests;
+    static volatile boolean networkAvailable = true;
+    static volatile int temperatureC = 26;
     private static volatile long refreshedAt, geoOpenedAt, weatherOpenedAt;
     static void city(Instrumentation test, Activity activity) {
         TextView name = activity.getWindow().getDecorView().findViewWithTag("weather_city");
@@ -45,8 +47,12 @@ final class ForecastDataChecks {
                     public String getCipherSuite() { return "fixture"; }
                     public Certificate[] getLocalCertificates() { return null; }
                     public Certificate[] getServerCertificates() { return null; }
-                    public int getResponseCode() { return 200; }
+                    public int getResponseCode() throws java.io.IOException {
+                        if (!networkAvailable) throw new java.net.ConnectException("Controlled fixture is offline");
+                        return 200;
+                    }
                     public InputStream getInputStream() throws java.io.IOException {
+                        getResponseCode();
                         try {
                             if ("api.bigdatacloud.net".equals(url.getHost())) return new ByteArrayInputStream(
                                 "{\"countryName\":\"Fixture Country\",\"principalSubdivision\":\"Fixture Province\",\"locality\":\"Fixture City\"}".getBytes("UTF-8"));
@@ -64,7 +70,7 @@ final class ForecastDataChecks {
             times.put((hour + (i - 1) * 3600000) / 1000); temperatures.put(20 + i); codes.put(0);
         }
         return new JSONObject().put("timezone", "UTC")
-            .put("current", new JSONObject().put("temperature_2m", 26).put("weather_code", 0))
+            .put("current", new JSONObject().put("temperature_2m", temperatureC).put("weather_code", 0))
             .put("hourly", new JSONObject().put("time", times).put("temperature_2m", temperatures).put("weather_code", codes)).toString();
     }
     static void run(Instrumentation test, Activity activity) {

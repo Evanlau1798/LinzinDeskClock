@@ -218,6 +218,24 @@ Builds use the checked-in frozen BKS; they never download or regenerate roots.
 
 ## Environment and limits
 
+### Controlled emulator soak
+
+Build `:app-legacy:assembleDebugAndroidTest`, then run the signed R8 candidate
+with Python 3.9+ on an isolated, rooted AOSP API14/19 emulator using UTC:
+
+```powershell
+python scripts/Test-LegacySoak.py --serial 127.0.0.1:5561 --console-port 5560 --apk PATH_TO_SIGNED_RELEASE.apk
+```
+
+This observes thirty real minutes, Home/launcher and actual screen off/on.
+Weather outage/recovery uses an explicit URLConnection fixture, and the emulator
+clock briefly crosses December 31 into January 1 before returning to host UTC.
+Preferences are backed up and restored; the selected test app is stopped on exit.
+Evidence is written below ignored `tmp/legacy-soak-*`. Live HTTPS/TLS remains a
+separate check in `Test-Legacy.ps1`; this fixture run does not prove live-service
+availability, physical-device performance or complete G5 acceptance. An emulator
+that cannot resume its display fails the power control rather than bypassing it.
+
 API14 was Android 4.0.2, official default ARM v7a image r2, with the archived
 official Emulator 26.1.4 classic engine. Modern QEMU2 rejects that ARM image.
 API19 was Android 4.4.2, official default x86 image r6, on Emulator 36.1.9/WHPX.
