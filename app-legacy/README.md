@@ -24,8 +24,9 @@ Original feasibility release screenshots (before the eight-style integration):
 
 The experimental application ID is `com.linzin.linzindeskclock.legacy.spike`.
 It does not replace the original app. Release probes use an explicitly local
-test signature, not an upstream or production signing identity. Version 1 is
-an experimental identity; final signing and upgrade policy remain release work.
+test signature, not an upstream or production signing identity. Version 2 keeps
+the experimental identity and increments versionCode for upgrades from version 1.
+Final signing and release policy remain separate work.
 
 Four-language weather fixtures also exercise wrapping and scrolling at fontScale 2.
 These screenshots show the scrolled lower portion with reachable actions:
