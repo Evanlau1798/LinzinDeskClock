@@ -15,8 +15,8 @@ import com.linzin.clockcore.ClockLayoutMode;
 
 final class LegacyClockScreen extends FrameLayout {
     final LegacyClockView clock;
-    final TextView calendarStatus, weatherStatus;
-    final Button weatherRefresh;
+    final TextView calendarStatus, weatherStatus, weatherForecast, weatherCity;
+    final Button weatherRefresh, weatherLocate;
     private final LegacyBattery battery;
     private final LegacyMonthView month;
     private final SharedPreferences prefs;
@@ -31,7 +31,7 @@ final class LegacyClockScreen extends FrameLayout {
     private int sidePage;
     private boolean locked, weatherBusy, active;
 
-    LegacyClockScreen(Context context, boolean locked, Runnable refreshWeather, Runnable selectionChanged) {
+    LegacyClockScreen(Context context, boolean locked, Runnable refreshWeather, Runnable refreshLocation, Runnable selectionChanged) {
         super(context);
         this.locked = locked;
         this.selectionChanged = selectionChanged;
@@ -62,9 +62,13 @@ final class LegacyClockScreen extends FrameLayout {
         month = new LegacyMonthView(context); calendarPage.addView(month, new LinearLayout.LayoutParams(-1, -2));
         calendarStatus = text("calendar_status", R.string.calendar_empty); calendarPage.addView(calendarStatus);
         weatherPage = new LinearLayout(context); weatherPage.setOrientation(LinearLayout.VERTICAL); weatherPage.setTag("weather_page");
+        weatherCity = text("weather_city", R.string.location_name_unavailable); weatherCity.setText(""); weatherPage.addView(weatherCity);
         weatherStatus = text("weather_status", R.string.weather_idle); weatherPage.addView(weatherStatus);
+        weatherForecast = text("weather_forecast", R.string.weather_idle); weatherForecast.setText(""); weatherPage.addView(weatherForecast);
         weatherRefresh = button("weather_refresh", getResources().getString(R.string.weather_refresh), refreshWeather);
         weatherPage.addView(weatherRefresh, new LinearLayout.LayoutParams(-1, -2));
+        weatherLocate = button("weather_locate", getResources().getString(R.string.weather_locate), refreshLocation);
+        weatherPage.addView(weatherLocate, new LinearLayout.LayoutParams(-1, -2));
         sideContent.addView(calendarPage, new LinearLayout.LayoutParams(-1, -2));
         sideContent.addView(weatherPage, new LinearLayout.LayoutParams(-1, -2));
         controls = new LinearLayout(context); controls.setOrientation(LinearLayout.VERTICAL); controls.setBackgroundColor(0xe608080b);
@@ -172,6 +176,7 @@ final class LegacyClockScreen extends FrameLayout {
         for (Button button : new Button[] { timeMode, style, seconds, layout, page, settings }) button.setEnabled(!locked);
         page.setEnabled(!locked && layoutMode != ClockLayoutMode.SINGLE);
         weatherRefresh.setEnabled(!locked && !weatherBusy && prefs.getBoolean("pref_weather_enabled", false));
+        weatherLocate.setEnabled(!locked && !weatherBusy && prefs.getBoolean("pref_weather_enabled", false));
     }
     boolean isCalendarVisible() { return getVisibility() == View.VISIBLE && layoutMode != ClockLayoutMode.SINGLE && sidePage == 0; }
     boolean isWeatherVisible() { return getVisibility() == View.VISIBLE && layoutMode != ClockLayoutMode.SINGLE && sidePage == 1; }
@@ -181,7 +186,7 @@ final class LegacyClockScreen extends FrameLayout {
         sidePage = prefs.getInt("pref_side_page", 0) == 1 ? 1 : 0;
         clock.set24Hour(prefs.getBoolean("pref_24_hour", false)); clock.reloadSettings(); applyLayout();
     }
-    void setWeatherBusy(boolean busy) { weatherBusy = busy; weatherRefresh.setEnabled(!locked && !busy && prefs.getBoolean("pref_weather_enabled", false)); }
+    void setWeatherBusy(boolean busy) { weatherBusy = busy; updateControls(); }
     void showControls() {
         controls.setVisibility(View.VISIBLE); handler.removeCallbacks(hideControls);
         if (active) handler.postDelayed(hideControls, 5000);

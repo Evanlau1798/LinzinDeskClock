@@ -5,4 +5,7 @@ java {
     targetCompatibility = JavaVersion.VERSION_1_8
 }
 
-dependencies { testImplementation(libs.junit) }
+dependencies {
+    api(libs.threetenbp)
+    testImplementation(libs.junit)
+}

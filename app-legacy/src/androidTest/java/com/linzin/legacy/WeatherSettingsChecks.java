@@ -30,7 +30,8 @@ final class WeatherSettingsChecks {
                     public Certificate[] getServerCertificates() { return null; }
                     public int getResponseCode() { return 200; }
                     public InputStream getInputStream() throws IOException {
-                        return new ByteArrayInputStream("{\"current\":{\"temperature_2m\":26.0,\"weather_code\":0}}".getBytes("UTF-8"));
+                        try { return new ByteArrayInputStream(ForecastDataChecks.body().getBytes("UTF-8")); }
+                        catch (org.json.JSONException error) { throw new IOException(error); }
                     }
                 };
             }
@@ -46,6 +47,7 @@ final class WeatherSettingsChecks {
         SettingsChecks.click(test, settings, settings.findPreference("pref_weather_enabled"));
         SettingsChecks.click(test, settings, settings.findPreference("pref_is_fahrenheit"));
         test.runOnMainSync(settings::finish); test.waitForIdleSync();
+        ((LegacyInstrumentation) test).awaitResumed(activity.getComponentName().getClassName(), null);
         if (!refresh.isEnabled()) throw new AssertionError("Enabled weather must expose refresh");
         test.runOnMainSync(() -> refresh.performClick());
         long deadline = SystemClock.elapsedRealtime() + 45000;
@@ -59,8 +61,10 @@ final class WeatherSettingsChecks {
         SettingsChecks.click(test, settings, settings.findPreference("pref_is_fahrenheit"));
         PreferenceActivity lastSettings = settings;
         test.runOnMainSync(lastSettings::finish); test.waitForIdleSync();
+        ((LegacyInstrumentation) test).awaitResumed(activity.getComponentName().getClassName(), null);
         if (!status.getText().toString().contains("26.0°C") || requests != fetched)
-            throw new AssertionError("Changing units must reformat the existing value without another request");
+            throw new AssertionError("Changing units must reformat the existing value without another request; status="
+                + status.getText() + " requests=" + requests + " fetched=" + fetched + " focus=" + activity.hasWindowFocus());
     }
     private static PreferenceActivity open(Instrumentation test, Activity activity) {
         return (PreferenceActivity) ((LegacyInstrumentation) test).openSettings(activity);

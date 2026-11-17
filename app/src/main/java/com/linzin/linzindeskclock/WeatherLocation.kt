@@ -2,6 +2,7 @@ package com.linzin.linzindeskclock
 
 import android.content.SharedPreferences
 import android.location.Location
+import com.linzin.clockcore.LocationAge
 
 data class WeatherLocation(
     val latitude: Double,
@@ -10,10 +11,7 @@ data class WeatherLocation(
     val provider: String? = null,
     val observedAtMillis: Long? = null
 ) {
-    fun knownFixTime(nowMillis: Long): Long? = fixTimeMillis?.takeIf {
-        it > 0 && it <= nowMillis &&
-            (observedAtMillis == null || (observedAtMillis in it..nowMillis))
-    }
+    fun knownFixTime(nowMillis: Long): Long? = LocationAge.knownFixTime(fixTimeMillis, observedAtMillis, nowMillis)
 }
 
 internal fun readWeatherLocation(prefs: SharedPreferences): WeatherLocation? {

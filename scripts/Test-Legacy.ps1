@@ -45,6 +45,7 @@ Install-Apk $Apk
 Install-Apk $testApk
 Install-Apk $fixtureApk
 try {
+    Invoke-Case 'probeChecks'
     Invoke-Case 'clock'
     $null = Invoke-Adb @('shell', 'am', 'force-stop', $package)
     Invoke-Case 'saved'
@@ -67,11 +68,15 @@ try {
     Invoke-Case 'battery'
     Invoke-Case 'month'
     Invoke-Case 'weatherSettings'
+    foreach ($mode in @('weatherForecast', 'weatherMetadata', 'weatherCity', 'weatherState', 'update', 'updateInvalid', 'updateCancel')) {
+        Invoke-Case $mode
+    }
     foreach ($mode in @('localeJa', 'localeTw', 'localeCn', 'localeEn', 'localeSystem')) { Invoke-Case $mode }
     Invoke-Fixture 'create'
     Invoke-Case 'calendar'
     Invoke-Case 'calendarOff'
     Invoke-Case 'network'
+    Invoke-Case 'updateLive'
     Invoke-Case 'tls'
     Invoke-Case 'paneCancellation'
 } finally { Invoke-Fixture 'cleanup' }

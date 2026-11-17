@@ -93,7 +93,7 @@ val verifyLegacyInputs = tasks.register("verifyLegacyInputs") {
     }
 }
 configurations.matching { it.name == "releaseRuntimeClasspath" }.all {
-    val bcFiles = filter { it.name.startsWith("bc") && it.extension == "jar" }
-    verifyLegacyInputs.configure { inputs.files(bcFiles) }
+    val pinnedFiles = filter { (it.name.startsWith("bc") || it.name.startsWith("threetenbp-")) && it.extension == "jar" }
+    verifyLegacyInputs.configure { inputs.files(pinnedFiles) }
 }
 tasks.named("preBuild") { dependsOn(verifyLegacyInputs) }

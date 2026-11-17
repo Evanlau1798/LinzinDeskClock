@@ -13,9 +13,7 @@ final class RuntimePermissionChecks {
     static void run(Instrumentation test, Activity clock) {
         String permission = "android.permission.READ_CALENDAR";
         if (clock.checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED) throw new AssertionError("Permission fixture requires revoked calendar access");
-        android.accessibilityservice.AccessibilityServiceInfo info = test.getUiAutomation().getServiceInfo();
-        info.flags |= android.accessibilityservice.AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS;
-        test.getUiAutomation().setServiceInfo(info);
+        configure(test);
         PreferenceActivity settings = (PreferenceActivity) ((LegacyInstrumentation) test).openSettings(clock);
         SettingsChecks.click(test, settings, settings.findPreference("pref_show_calendar_events"));
         if (clock.getSharedPreferences("desk_clock_prefs", 0).getBoolean("pref_show_calendar_events", false))
@@ -33,7 +31,12 @@ final class RuntimePermissionChecks {
             throw new AssertionError("Granted calendar must become available in a dual pane");
         test.runOnMainSync(settings::finish); test.waitForIdleSync();
     }
-    private static void press(Instrumentation test, String buttonId) {
+    static void configure(Instrumentation test) {
+        android.accessibilityservice.AccessibilityServiceInfo info = test.getUiAutomation().getServiceInfo();
+        info.flags |= android.accessibilityservice.AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS;
+        test.getUiAutomation().setServiceInfo(info);
+    }
+    static void press(Instrumentation test, String buttonId) {
         long deadline = SystemClock.elapsedRealtime() + 8000;
         while (SystemClock.elapsedRealtime() < deadline) {
             List<AccessibilityNodeInfo> nodes = new ArrayList<>();

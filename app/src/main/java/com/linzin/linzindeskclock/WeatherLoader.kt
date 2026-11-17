@@ -7,6 +7,7 @@ import android.location.LocationManager
 import android.os.Build
 import android.os.Bundle
 import android.util.Log
+import com.linzin.clockcore.CityNames
 import androidx.core.content.ContextCompat
 import kotlin.coroutines.resume
 import kotlinx.coroutines.CancellationException
@@ -169,31 +170,16 @@ private suspend fun fetchCityNameFallback(lat: Double, lon: Double, languageTag:
         val countryName = json.optString("countryName", "").trim()
         val subdivision = json.optString("principalSubdivision", "").trim()
 
-        // 1. 優先讀取具體城市或鄉鎮市區欄位，並確保不與國家或一級省州名稱重複
-        val directCity = listOf(
-            json.optString("locality", "").trim(),
-            json.optString("city", "").trim()
-        ).firstOrNull { it.isNotBlank() && it != countryName && it != subdivision }
-
-        if (directCity != null) return directCity
-
-        // 2. 從 administrative 陣列中嚴格篩選 adminLevel 5~8（縣市、區、鄉鎮層級）
         val adminArray = json.optJSONObject("localityInfo")?.optJSONArray("administrative")
-        if (adminArray != null) {
-            for (i in adminArray.length() - 1 downTo 0) {
-                val item = adminArray.optJSONObject(i) ?: continue
-                val level = item.optInt("adminLevel", 0)
-                if (level in 5..8) {
-                    val candidate = item.optString("name", "").trim()
-                    if (candidate.isNotBlank() && candidate != countryName && candidate != subdivision) {
-                        return candidate
-                    }
-                }
-            }
+        val levels = IntArray(adminArray?.length() ?: 0)
+        val names = arrayOfNulls<String>(levels.size)
+        for (i in levels.indices) {
+            val item = adminArray?.optJSONObject(i) ?: continue
+            levels[i] = item.optInt("adminLevel", 0)
+            names[i] = item.optString("name", "").trim()
         }
-
-        // 若無法精確解析到城市層級，回傳 null 交由上層顯示「目前位置 / 現在地」
-        null
+        CityNames.select(json.optString("locality", "").trim(), json.optString("city", "").trim(),
+            countryName, subdivision, levels, names)
     } catch (e: CancellationException) {
         throw e
     } catch (_: Exception) {

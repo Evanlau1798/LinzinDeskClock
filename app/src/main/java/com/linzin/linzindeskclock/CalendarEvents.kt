@@ -9,9 +9,9 @@ import android.net.Uri
 import android.os.CancellationSignal
 import android.provider.CalendarContract
 import android.util.Log
+import com.linzin.clockcore.CalendarEventLabels
 import androidx.core.content.ContextCompat
 import java.text.SimpleDateFormat
-import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
@@ -90,24 +90,6 @@ private fun readCalendarEvents(
             val timeFormat = SimpleDateFormat("H:mm", Locale.US)
             val dayFormat = SimpleDateFormat("M/d", Locale.US)
 
-            val nowCal = Calendar.getInstance().apply { timeInMillis = now }
-            val currentYear = nowCal.get(Calendar.YEAR)
-            val currentMonth = nowCal.get(Calendar.MONTH)
-            val currentDay = nowCal.get(Calendar.DAY_OF_MONTH)
-            val currentDayOfYear = nowCal.get(Calendar.DAY_OF_YEAR)
-
-            // 本地今天 00:00:00 的時間戳
-            val todayStartLocal = Calendar.getInstance().apply {
-                clear()
-                set(currentYear, currentMonth, currentDay, 0, 0, 0)
-            }.timeInMillis
-
-            // Android 全天行程在底層統一以 UTC 00:00:00 記錄，計算對應的 UTC 今日時間點
-            val todayUtcMidnight = Calendar.getInstance(TimeZone.getTimeZone("UTC")).apply {
-                clear()
-                set(currentYear, currentMonth, currentDay, 0, 0, 0)
-            }.timeInMillis
-
             while (cursor.moveToNext() && eventList.size < 3) {
                 signal.throwIfCanceled()
                 val title = cursor.getString(titleIdx) ?: context.getString(R.string.event_untitled)
@@ -115,54 +97,17 @@ private fun readCalendarEvents(
                 val endMillis = cursor.getLong(endIdx)
                 val isAllDay = cursor.getInt(allDayIdx) == 1
 
-                if (isAllDay) {
-                    // 全天行程的 endMillis 是結束日的隔天 00:00 UTC（Exclusive）
-                    // 若結束時間小於等於今日起點，代表昨天或更早以前就結束了，跳過
-                    if (endMillis <= todayUtcMidnight) {
-                        continue
-                    }
-
-                    // 只要「開始時間 <= 今天」且「結束時間 > 今天」，代表今天正在該多日行程中
-                    val isCoveringToday = (beginMillis <= todayUtcMidnight && endMillis > todayUtcMidnight)
-
-                    val label = if (isCoveringToday) {
-                        context.getString(R.string.event_all_day_today)
-                    } else {
-                        dayFormat.timeZone = TimeZone.getTimeZone("UTC")
-                        "${dayFormat.format(Date(beginMillis))} ${context.getString(R.string.event_all_day)}"
-                    }
-
-                    eventList.add(UpcomingCalendarEvent(title = title, timeLabel = label))
-                } else {
-                    // 非全天一般行程：已結束則跳過
-                    if (endMillis <= now) {
-                        continue
-                    }
-
-                    val eventCal = Calendar.getInstance().apply { timeInMillis = beginMillis }
-                    val isToday = (eventCal.get(Calendar.DAY_OF_YEAR) == currentDayOfYear &&
-                            eventCal.get(Calendar.YEAR) == currentYear)
-
-                    dayFormat.timeZone = TimeZone.getDefault()
-                    timeFormat.timeZone = TimeZone.getDefault()
-
-                    val label = when {
-                        // 跨天且今天仍在進行中的行程
-                        beginMillis < todayStartLocal && endMillis > now -> {
-                            context.getString(R.string.event_all_day_today)
-                        }
-                        // 今天內的行程顯示具體開始時間（如 14:00）
-                        isToday -> {
-                            timeFormat.format(Date(beginMillis))
-                        }
-                        // 明後天的行程顯示日期與時間（如 11/9 10:00）
-                        else -> {
-                            "${dayFormat.format(Date(beginMillis))} ${timeFormat.format(Date(beginMillis))}"
-                        }
-                    }
-
-                    eventList.add(UpcomingCalendarEvent(title = title, timeLabel = label))
+                val kind = CalendarEventLabels.classify(beginMillis, endMillis, isAllDay, now, TimeZone.getDefault())
+                if (kind == CalendarEventLabels.Kind.HIDDEN) continue
+                dayFormat.timeZone = if (kind == CalendarEventLabels.Kind.FUTURE_ALL_DAY) TimeZone.getTimeZone("UTC") else TimeZone.getDefault()
+                timeFormat.timeZone = TimeZone.getDefault()
+                val label = when (kind) {
+                    CalendarEventLabels.Kind.TODAY_ALL_DAY -> context.getString(R.string.event_all_day_today)
+                    CalendarEventLabels.Kind.FUTURE_ALL_DAY -> "${dayFormat.format(Date(beginMillis))} ${context.getString(R.string.event_all_day)}"
+                    CalendarEventLabels.Kind.TODAY_TIME -> timeFormat.format(Date(beginMillis))
+                    else -> "${dayFormat.format(Date(beginMillis))} ${timeFormat.format(Date(beginMillis))}"
                 }
+                eventList.add(UpcomingCalendarEvent(title = title, timeLabel = label))
             }
         }
     } catch (cancelled: CancellationException) {

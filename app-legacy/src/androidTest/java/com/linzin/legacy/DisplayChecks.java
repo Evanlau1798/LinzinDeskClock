@@ -26,7 +26,7 @@ final class DisplayChecks {
         LegacyClockScreen[] screen = new LegacyClockScreen[1];
         test.runOnMainSync(() -> {
             try {
-                screen[0] = new LegacyClockScreen(context, false, () -> { }, () -> { });
+                screen[0] = new LegacyClockScreen(context, false, () -> { }, () -> { }, () -> { });
                 activity.setContentView(screen[0]); screen[0].resume();
             } catch (Throwable error) { failure.set(error); }
         });
