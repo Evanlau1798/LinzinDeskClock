@@ -55,6 +55,13 @@ public class LegacyHttpsTest {
         assertTrue(fixture.disconnected);
     }
 
+    @Test public void shortDeadlineAlsoLimitsPlatformConnectAndReadTimeouts() throws Exception {
+        LegacyHttps client = new LegacyHttps((SSLSocketFactory) SSLSocketFactory.getDefault(), 500);
+        assertEquals("{}", client.get(url("https")));
+        assertTrue("Connect timeout must fit the remaining budget", fixture.getConnectTimeout() > 0 && fixture.getConnectTimeout() <= 500);
+        assertTrue("Read timeout must fit the remaining budget", fixture.getReadTimeout() > 0 && fixture.getReadTimeout() <= 500);
+    }
+
     @Test public void oversizedResponsesAreRejectedAndDisconnected() throws Exception {
         URL url = new URL(null, "https://fixture.invalid/data", new URLStreamHandler() {
             protected URLConnection openConnection(URL url) {
@@ -76,6 +83,39 @@ public class LegacyHttpsTest {
         try { client().get(url); fail("Read must fail"); } catch (IOException expected) { }
         assertNotNull(fixture);
         assertTrue(fixture.disconnected);
+    }
+
+    @Test public void cancellationBeforeStartMustNotOpenAnyConnection() throws Exception {
+        LegacyHttps request = client(); request.cancel();
+        try { request.get(url("https")); fail("Cancelled requests must not start IO"); }
+        catch (IOException expected) { }
+        assertNull(fixture);
+    }
+
+    @Test public void cancellationDuringConnectionCreationMustNotStartTheResponse() throws Exception {
+        CountDownLatch opening = new CountDownLatch(1), release = new CountDownLatch(1);
+        java.util.concurrent.atomic.AtomicInteger responses = new java.util.concurrent.atomic.AtomicInteger();
+        URL endpoint = new URL(null, "https://fixture.invalid/data", new URLStreamHandler() {
+            protected URLConnection openConnection(URL url) throws IOException {
+                opening.countDown();
+                try { if (!release.await(3, TimeUnit.SECONDS)) throw new IOException("Fixture release missing"); }
+                catch (InterruptedException interrupted) { throw new IOException(interrupted); }
+                fixture = new Fixture(url) {
+                    public int getResponseCode() { responses.incrementAndGet(); return 200; }
+                };
+                return fixture;
+            }
+        });
+        LegacyHttps request = client();
+        java.util.concurrent.FutureTask<Boolean> job = new java.util.concurrent.FutureTask<>(() -> {
+            try { request.get(endpoint); return false; } catch (IOException expected) { return true; }
+        });
+        Thread caller = new Thread(job); caller.start();
+        try {
+            assertTrue(opening.await(1, TimeUnit.SECONDS)); request.cancel(); release.countDown();
+            assertTrue("Cancellation must still reject a connection published after cancel", job.get(3, TimeUnit.SECONDS));
+            assertEquals(0, responses.get()); assertTrue(fixture.disconnected);
+        } finally { release.countDown(); caller.join(3000); }
     }
 
     @Test public void cancellationStartsCleanupWithoutBlockingTheUiCaller() throws Exception {

@@ -76,15 +76,17 @@ final class WindowSettingsChecks {
             if (activity.getWindow().getAttributes().screenBrightness != -1) throw new AssertionError("System brightness must be restored");
         } finally { test.removeMonitor(monitor); }
         LegacyInstrumentation lifecycle = (LegacyInstrumentation) test;
-        int stops = lifecycle.clockStops, resumes = lifecycle.clockResumes;
+        int stops = lifecycle.clockStops;
         Intent home = new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
         test.runOnMainSync(() -> activity.startActivity(home));
         waitFor(() -> lifecycle.clockStops > stops && !keepsScreenOn(activity), "Real Home must stop the clock and release the display flag");
+        int resumesAfterStop = lifecycle.clockResumes;
         Intent launcher = activity.getPackageManager().getLaunchIntentForPackage(activity.getPackageName())
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED);
         test.runOnMainSync(() -> test.getTargetContext().startActivity(launcher));
-        waitFor(() -> lifecycle.clockResumes > resumes, "Launcher must actually resume the stopped clock");
-        if (!keepsScreenOn(activity)) throw new AssertionError("Launcher return must restore never-timeout display without another touch");
+        waitFor(() -> lifecycle.clockResumes > resumesAfterStop, "Launcher must actually resume the stopped clock");
+        if (!keepsScreenOn(activity)) throw new AssertionError("Launcher return must restore never-timeout display without another touch; afterStop="
+            + resumesAfterStop + " observed=" + lifecycle.clockResumes + " focused=" + activity.hasWindowFocus());
     }
     static void timeout(Instrumentation test, Activity activity) {
         View[] cover = new View[1];

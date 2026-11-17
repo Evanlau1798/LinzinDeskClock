@@ -22,31 +22,42 @@ final class HttpsProbe {
     static volatile int requests;
     static volatile String peer;
     static volatile String socketHost;
+    static final StringBuffer outcomes = new StringBuffer();
     private static volatile int generation;
 
-    static void begin(URL endpoint) { generation++; target = endpoint; failure = null; status = 0; protocol = null; peer = null; socketHost = null; }
+    static synchronized void begin(URL endpoint) { generation++; target = endpoint; failure = null; status = 0; protocol = null; peer = null; socketHost = null; outcomes.setLength(0); }
 
     static void install(URL endpoint) {
         begin(endpoint);
         URL.setURLStreamHandlerFactory(scheme -> !"https".equals(scheme) && !"http".equals(scheme) ? null : new URLStreamHandler() {
             @Override protected URLConnection openConnection(URL url) throws IOException {
                 if (!"https".equals(url.getProtocol())) { cleartext = true; throw new IOException("Cleartext is forbidden"); }
-                requests++;
-                return new ObservedConnection(url, (HttpsURLConnection) target.openConnection());
+                if (!"api.open-meteo.com".equals(url.getHost())) {
+                    // A scheme-relative URL retains the original handler instead of re-entering our factory.
+                    return new URL(target, url.toExternalForm().substring("https:".length())).openConnection();
+                }
+                final int index, ticket;
+                final URL endpoint;
+                synchronized (HttpsProbe.class) { index = ++requests; ticket = generation; endpoint = target; }
+                return new ObservedConnection(url, (HttpsURLConnection) endpoint.openConnection(), index, ticket);
             }
         });
     }
 
     private static final class ObservedConnection extends HttpsURLConnection {
         private final HttpsURLConnection actual;
-        ObservedConnection(URL url, HttpsURLConnection actual) { super(url); this.actual = actual; }
+        private final int index, ticket;
+        private final long started = System.nanoTime();
+        ObservedConnection(URL url, HttpsURLConnection actual, int index, int ticket) {
+            super(url); this.actual = actual; this.index = index; this.ticket = ticket;
+        }
         public void connect() throws IOException { actual.connect(); }
         public void disconnect() { actual.disconnect(); }
         public boolean usingProxy() { return actual.usingProxy(); }
         public String getCipherSuite() { return actual.getCipherSuite(); }
         public Certificate[] getLocalCertificates() { return actual.getLocalCertificates(); }
         public Certificate[] getServerCertificates() throws javax.net.ssl.SSLPeerUnverifiedException { return actual.getServerCertificates(); }
-        public void setSSLSocketFactory(SSLSocketFactory factory) { actual.setSSLSocketFactory(new ObservedFactory(factory, generation)); }
+        public void setSSLSocketFactory(SSLSocketFactory factory) { actual.setSSLSocketFactory(new ObservedFactory(factory, ticket)); }
         public SSLSocketFactory getSSLSocketFactory() { return actual.getSSLSocketFactory(); }
         public void setHostnameVerifier(HostnameVerifier verifier) { actual.setHostnameVerifier(verifier); }
         public HostnameVerifier getHostnameVerifier() { return actual.getHostnameVerifier(); }
@@ -55,12 +66,27 @@ final class HttpsProbe {
         public void setInstanceFollowRedirects(boolean follow) { actual.setInstanceFollowRedirects(follow); }
         public void setRequestProperty(String key, String value) { actual.setRequestProperty(key, value); }
         public int getResponseCode() throws IOException {
-            try { int code = actual.getResponseCode(); status = code; return code; }
-            catch (IOException | RuntimeException error) { failure = error; throw error; }
+            try {
+                int code = actual.getResponseCode(); record("HTTP " + code);
+                synchronized (HttpsProbe.class) {
+                    if (generation == ticket) { status = code; if (index == requests) failure = null; }
+                }
+                return code;
+            } catch (IOException | RuntimeException error) {
+                record(error.toString()); failed(error); throw error;
+            }
         }
         public InputStream getInputStream() throws IOException {
             try { return actual.getInputStream(); }
-            catch (IOException | RuntimeException error) { failure = error; throw error; }
+            catch (IOException | RuntimeException error) { record(error.toString()); failed(error); throw error; }
+        }
+        private void failed(Throwable error) {
+            synchronized (HttpsProbe.class) { if (generation == ticket && index == requests) failure = error; }
+        }
+        private void record(String event) {
+            outcomes.append("request=" + index + " generation=" + ticket + " source=" + url.getHost()
+                + " target=" + actual.getURL().getHost() + " elapsedMs=" + (System.nanoTime() - started) / 1_000_000
+                + " " + event + "\n");
         }
     }
 
@@ -70,10 +96,12 @@ final class HttpsProbe {
         ObservedFactory(SSLSocketFactory actual, int ticket) { this.actual = actual; this.ticket = ticket; }
         private Socket observe(Socket socket) {
             ((SSLSocket) socket).addHandshakeCompletedListener(event -> {
-                if (generation == ticket) {
-                    protocol = event.getSession().getProtocol();
-                    try { peer = event.getSession().getPeerPrincipal().getName(); }
-                    catch (javax.net.ssl.SSLPeerUnverifiedException error) { peer = error.toString(); }
+                synchronized (HttpsProbe.class) {
+                    if (generation == ticket) {
+                        protocol = event.getSession().getProtocol();
+                        try { peer = event.getSession().getPeerPrincipal().getName(); }
+                        catch (javax.net.ssl.SSLPeerUnverifiedException error) { peer = error.toString(); }
+                    }
                 }
             });
             return socket;
@@ -82,7 +110,7 @@ final class HttpsProbe {
         public String[] getSupportedCipherSuites() { return actual.getSupportedCipherSuites(); }
         public Socket createSocket() throws IOException { return observe(actual.createSocket()); }
         public Socket createSocket(Socket socket, String host, int port, boolean close) throws IOException {
-            if (generation == ticket) socketHost = host;
+            synchronized (HttpsProbe.class) { if (generation == ticket) socketHost = host; }
             return observe(actual.createSocket(socket, host, port, close));
         }
         public Socket createSocket(String host, int port) throws IOException { return observe(actual.createSocket(host, port)); }

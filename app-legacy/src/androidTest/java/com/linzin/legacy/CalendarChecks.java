@@ -11,8 +11,8 @@ import java.util.concurrent.atomic.AtomicReference;
 final class CalendarChecks {
     private static void check(boolean ok, String message) { if (!ok) throw new AssertionError(message); }
     private static MatrixCursor rows() {
-        MatrixCursor cursor = new MatrixCursor(new String[] { "title", "begin", "allDay" });
-        cursor.addRow(new Object[] { "Calendar fixture", 1700000000000L, 0 });
+        MatrixCursor cursor = new MatrixCursor(new String[] { "title", "begin", "end", "allDay" });
+        cursor.addRow(new Object[] { "Calendar fixture", 1700000000000L, 1700003600000L, 0 });
         return cursor;
     }
     static void run(Context context) throws Exception {

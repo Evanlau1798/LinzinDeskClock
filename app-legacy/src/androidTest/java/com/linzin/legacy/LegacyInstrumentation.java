@@ -37,7 +37,72 @@ public class LegacyInstrumentation extends Instrumentation {
         Bundle result = new Bundle();
         int code = Activity.RESULT_OK;
         try {
-            if ("flipLanguage".equals(mode)) {
+            if ("probeChecks".equals(mode)) {
+                HttpsProbeChecks.run(); result.putString("stream", "OK: per-request TLS outcome and endpoint isolation controls");
+            } else if ("primeOldGps".equals(mode)) {
+                LocatorUiChecks.primeOld(this); result.putString("stream", "OK: dated GPS cache fixture and listener removal");
+            } else if ("updateBrowser".equals(mode)) {
+                UpdateChecks.browser(getTargetContext()); result.putString("stream", "OK: unavailable browser retains safe copy fallback");
+            } else if ("update".equals(mode) || "updateInvalid".equals(mode) || "updateCancel".equals(mode) || "updateLive".equals(mode)) {
+                getTargetContext().getSharedPreferences("desk_clock_prefs", Context.MODE_PRIVATE).edit().clear()
+                    .putString("pref_app_language", "en").commit();
+                if (!"updateLive".equals(mode)) UpdateChecks.install(mode);
+                launch(); UpdateChecks.run(this, activity, "updateLive".equals(mode));
+                result.putString("stream", "OK: " + mode + ": secure query, Legacy compatibility and copyable safe release link");
+            } else if ("calendarRange".equals(mode) || "calendarContent".equals(mode)) {
+                CalendarPeriodChecks.run(getTargetContext(), "calendarRange".equals(mode));
+                result.putString("stream", "OK: " + mode);
+            } else if (mode.startsWith("geocoding")) {
+                GeocodingChecks.run(mode, getTargetContext());
+                result.putString("stream", "OK: " + mode);
+            } else if ("locationPermission".equals(mode) || "locationCoarse".equals(mode)) {
+                check(android.os.Build.VERSION.SDK_INT >= 23, "Location runtime permission case requires API23+");
+                getTargetContext().getSharedPreferences("desk_clock_prefs", Context.MODE_PRIVATE).edit().clear()
+                    .putBoolean("pref_weather_enabled", true).putString("pref_app_language", "en")
+                    .putString("pref_layout_mode", "DUAL_LEFT_LARGE").putInt("pref_side_page", 1)
+                    .putString("pref_last_valid_lat", "25.0").putString("pref_last_valid_lon", "121.0").commit();
+                ForecastDataChecks.install(); launch();
+                if ("locationCoarse".equals(mode)) LocationPermissionChecks.coarse(this, activity);
+                else LocationPermissionChecks.run(this, activity);
+                result.putString("stream", "OK: " + mode + ": permission flow and saved-location weather");
+            } else if ("weatherLocate".equals(mode) || "weatherLocateActive".equals(mode)) {
+                getTargetContext().getSharedPreferences("desk_clock_prefs", Context.MODE_PRIVATE).edit().clear()
+                    .putBoolean("pref_weather_enabled", true).putString("pref_app_language", "en")
+                    .putString("pref_layout_mode", "DUAL_LEFT_LARGE").putInt("pref_side_page", 1).commit();
+                ForecastDataChecks.install(); launch(); LocatorUiChecks.run(this, activity, "weatherLocateActive".equals(mode));
+                result.putString("stream", "OK: real emulator location updates, weather and saved fix metadata");
+            } else if (mode.startsWith("locator")) {
+                LocatorChecks.run(mode);
+                result.putString("stream", "OK: " + mode);
+            } else if ("weatherDisplay".equals(mode)) {
+                launch(); WeatherDisplayChecks.run(this, activity);
+                result.putString("stream", "OK: four locales at fontScale 2, wrapping, scroll and reachable location action");
+            } else if ("weatherParserChecks".equals(mode)) {
+                WeatherParserChecks.run(getTargetContext());
+                result.putString("stream", "OK: forecast parsing, finite values, overflow, array alignment, units and bundled Kyiv zone");
+            } else if ("weatherForecast".equals(mode) || "weatherMetadata".equals(mode) || "weatherCity".equals(mode)
+                || "weatherState".equals(mode) || "weatherAutoRefresh".equals(mode)
+                || "weatherGeoDeadline".equals(mode) || "weatherTotalDeadline".equals(mode) || "weatherRollback".equals(mode)) {
+                getTargetContext().getSharedPreferences("desk_clock_prefs", Context.MODE_PRIVATE).edit().clear()
+                    .putBoolean("pref_weather_enabled", true).putBoolean("pref_24_hour", true)
+                    .putString("pref_app_language", "en").putString("pref_layout_mode", "DUAL_LEFT_LARGE").putInt("pref_side_page", 1)
+                    .putString("pref_last_valid_lat", "25.0").putString("pref_last_valid_lon", "121.0").commit();
+                if ("weatherMetadata".equals(mode) || "weatherState".equals(mode)) getTargetContext().getSharedPreferences("desk_clock_prefs", Context.MODE_PRIVATE).edit()
+                    .putString("pref_last_location_fix_time", Long.toString(System.currentTimeMillis() - 5400000))
+                    .putString("pref_last_location_observed_at", Long.toString(System.currentTimeMillis()))
+                    .putString("pref_last_location_provider", "gps").commit();
+                boolean deadlineCase = "weatherGeoDeadline".equals(mode) || "weatherTotalDeadline".equals(mode) || "weatherRollback".equals(mode);
+                if (deadlineCase) WeatherDeadlineChecks.install("weatherTotalDeadline".equals(mode)); else ForecastDataChecks.install();
+                launch();
+                if ("weatherRollback".equals(mode)) activity = WeatherDeadlineChecks.rollback(this, activity);
+                else if (deadlineCase) WeatherDeadlineChecks.run(this, activity, "weatherTotalDeadline".equals(mode));
+                else if ("weatherState".equals(mode)) activity = WeatherStateChecks.run(this, activity);
+                else if ("weatherAutoRefresh".equals(mode)) WeatherRefreshChecks.run(this, activity);
+                else ForecastDataChecks.run(this, activity);
+                if ("weatherMetadata".equals(mode)) ForecastDataChecks.metadata(this, activity);
+                if ("weatherCity".equals(mode)) ForecastDataChecks.city(this, activity);
+                result.putString("stream", "OK: " + mode);
+            } else if ("flipLanguage".equals(mode)) {
                 getTargetContext().getSharedPreferences("desk_clock_prefs", Context.MODE_PRIVATE).edit().clear().commit();
                 launch(); activity = WindowSettingsChecks.flipAcrossLanguage(this, activity);
                 result.putString("stream", "OK: disabling flip after language recreation restores automatic orientation");
@@ -235,7 +300,7 @@ public class LegacyInstrumentation extends Instrumentation {
                 tlsMatrix(result);
             } else if ("network".equals(mode)) {
                 selectSidebar(1);
-                HttpsProbe.install(new URL("https://api.open-meteo.com/v1/forecast?latitude=25.0&longitude=121.0&current=temperature_2m,weather_code&timezone=auto"));
+                HttpsProbe.install(new URL("https://api.open-meteo.com/v1/forecast?latitude=25.0&longitude=121.0&current=temperature_2m,weather_code&hourly=temperature_2m,weather_code&forecast_days=2&timezone=auto&timeformat=unixtime"));
                 getTargetContext().getSharedPreferences("desk_clock_prefs", Context.MODE_PRIVATE).edit()
                     .putString("pref_last_valid_lat", "25.0").putString("pref_last_valid_lon", "121.0").commit();
                 launch();
@@ -391,7 +456,7 @@ public class LegacyInstrumentation extends Instrumentation {
             Bundle progress = new Bundle();
             progress.putString("stream", "TLS case " + endpoints[i].getHost() + " requests=" + HttpsProbe.requests
                 + " status=" + HttpsProbe.status + " protocol=" + HttpsProbe.protocol + " peer=" + HttpsProbe.peer
-                + " failure=" + HttpsProbe.failure + "\n");
+                + " failure=" + HttpsProbe.failure + "\n" + HttpsProbe.outcomes);
             sendStatus(0, progress);
             check(!HttpsProbe.cleartext, "TLS error must never trigger cleartext");
             if (i < 3) {

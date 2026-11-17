@@ -16,6 +16,7 @@ final class LegacyHttps {
     private final Tls12SocketFactory factory;
     private final long timeoutMillis;
     private final AtomicReference<HttpsURLConnection> active = new AtomicReference<>();
+    private volatile boolean cancelled;
     LegacyHttps(SSLSocketFactory factory) { this(factory, 30000); }
     LegacyHttps(SSLSocketFactory factory, long timeoutMillis) {
         this.factory = new Tls12SocketFactory(factory);
@@ -31,8 +32,9 @@ final class LegacyHttps {
         watchdog.schedule(new TimerTask() { @Override public void run() { LegacyHttps.this.cancel(); } }, timeoutMillis);
         try {
             checkActive(deadline);
-            connection.setConnectTimeout(15000);
-            connection.setReadTimeout(15000);
+            int platformTimeout = (int) Math.max(1, Math.min(15000, (deadline - System.nanoTime()) / 1_000_000));
+            connection.setConnectTimeout(platformTimeout);
+            connection.setReadTimeout(platformTimeout);
             connection.setInstanceFollowRedirects(false);
             connection.setSSLSocketFactory(factory);
             connection.setHostnameVerifier(HttpsURLConnection.getDefaultHostnameVerifier());
@@ -58,11 +60,12 @@ final class LegacyHttps {
             if (active.compareAndSet(connection, null)) connection.disconnect();
         }
     }
-    private static void checkActive(long deadline) throws IOException {
-        if (Thread.currentThread().isInterrupted()) throw new InterruptedIOException("Request cancelled");
+    private void checkActive(long deadline) throws IOException {
+        if (cancelled || Thread.currentThread().isInterrupted()) throw new InterruptedIOException("Request cancelled");
         if (System.nanoTime() > deadline) throw new SocketTimeoutException("Request deadline exceeded");
     }
     void cancel() {
+        cancelled = true;
         factory.cancel();
         HttpsURLConnection connection = active.getAndSet(null);
         if (connection == null) return;

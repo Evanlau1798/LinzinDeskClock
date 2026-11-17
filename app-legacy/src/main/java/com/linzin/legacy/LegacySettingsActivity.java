@@ -18,6 +18,7 @@ public class LegacySettingsActivity extends PreferenceActivity {
     private static final int CALENDAR_PERMISSION = 211;
     private SharedPreferences prefs;
     private PreferenceScreen root;
+    private LegacyUpdates updates;
 
     @Override protected void attachBaseContext(android.content.Context base) { super.attachBaseContext(LegacyLocales.wrap(base)); }
 
@@ -60,10 +61,14 @@ public class LegacySettingsActivity extends PreferenceActivity {
             timeout.setValue(value.toString()); timeout.setSummary(timeout.getEntry()); return true;
         });
         action("tutorial", R.string.pref_tutorial_title, () -> LegacyTutorial.show(this));
+        updates = new LegacyUpdates(this, action("check_update", R.string.update_check, () -> { }));
         Preference capabilities = new Preference(this); capabilities.setKey("capabilities");
         capabilities.setTitle(R.string.capabilities_title); capabilities.setSummary(R.string.capabilities_description);
         capabilities.setSelectable(false); root.addPreference(capabilities);
     }
+    @Override protected void onResume() { super.onResume(); updates.resume(); }
+    @Override protected void onPause() { updates.pause(); super.onPause(); }
+    @Override protected void onDestroy() { updates.close(); super.onDestroy(); }
     private void toggle(String key, int title, boolean defaultValue) {
         CheckBoxPreference value = new CheckBoxPreference(this); value.setKey(key); value.setTitle(title);
         value.setDefaultValue(defaultValue); root.addPreference(value);
