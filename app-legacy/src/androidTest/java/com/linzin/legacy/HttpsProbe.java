@@ -18,6 +18,7 @@ final class HttpsProbe {
     static volatile URL target;
     static volatile int status;
     static volatile String protocol;
+    static volatile boolean bodyComplete;
     static volatile boolean cleartext;
     static volatile int requests;
     static volatile String peer;
@@ -25,7 +26,7 @@ final class HttpsProbe {
     static final StringBuffer outcomes = new StringBuffer();
     private static volatile int generation;
 
-    static synchronized void begin(URL endpoint) { generation++; target = endpoint; failure = null; status = 0; protocol = null; peer = null; socketHost = null; outcomes.setLength(0); }
+    static synchronized void begin(URL endpoint) { generation++; target = endpoint; failure = null; status = 0; protocol = null; bodyComplete = false; peer = null; socketHost = null; outcomes.setLength(0); }
 
     static void install(URL endpoint) {
         begin(endpoint);
@@ -38,7 +39,7 @@ final class HttpsProbe {
                 }
                 final int index, ticket;
                 final URL endpoint;
-                synchronized (HttpsProbe.class) { index = ++requests; ticket = generation; endpoint = target; }
+                synchronized (HttpsProbe.class) { index = ++requests; ticket = generation; endpoint = target; bodyComplete = false; }
                 return new ObservedConnection(url, (HttpsURLConnection) endpoint.openConnection(), index, ticket);
             }
         });
@@ -77,11 +78,34 @@ final class HttpsProbe {
             }
         }
         public InputStream getInputStream() throws IOException {
-            try { return actual.getInputStream(); }
+            try {
+                return new java.io.FilterInputStream(actual.getInputStream()) {
+                    public int read() throws IOException {
+                        try { return observed(in.read()); }
+                        catch (IOException | RuntimeException error) { failed(error); throw error; }
+                    }
+                    public int read(byte[] buffer, int offset, int count) throws IOException {
+                        try { return observed(in.read(buffer, offset, count)); }
+                        catch (IOException | RuntimeException error) { failed(error); throw error; }
+                    }
+                    public void close() throws IOException {
+                        try { super.close(); }
+                        catch (IOException | RuntimeException error) { failed(error); throw error; }
+                    }
+                    private int observed(int count) {
+                        synchronized (HttpsProbe.class) {
+                            if (count == -1 && generation == ticket && index == requests && failure == null) bodyComplete = true;
+                        }
+                        return count;
+                    }
+                };
+            }
             catch (IOException | RuntimeException error) { record(error.toString()); failed(error); throw error; }
         }
         private void failed(Throwable error) {
-            synchronized (HttpsProbe.class) { if (generation == ticket && index == requests) failure = error; }
+            synchronized (HttpsProbe.class) {
+                if (generation == ticket && index == requests) { failure = error; bodyComplete = false; }
+            }
         }
         private void record(String event) {
             outcomes.append("request=" + index + " generation=" + ticket + " source=" + url.getHost()
