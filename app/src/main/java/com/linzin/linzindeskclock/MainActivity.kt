@@ -1,5 +1,9 @@
 package com.linzin.linzindeskclock
 
+import com.linzin.clockcore.ClockAngles
+import com.linzin.clockcore.ClockLayoutMode
+import com.linzin.clockcore.MonthGrid
+
 import android.Manifest
 import android.annotation.SuppressLint
 import android.app.Activity
@@ -181,12 +185,6 @@ private val DeskClockColorScheme = darkColorScheme(
     onSurfaceVariant = Color(0xFFA0A0AA),
     outline = Color(0xFF5A5A62)
 )
-
-enum class ClockLayoutMode {
-    SINGLE,
-    DUAL_LEFT_LARGE,
-    DUAL_RIGHT_LARGE
-}
 
 data class BatteryState(
     val level: Int = 100,
@@ -3093,7 +3091,7 @@ fun DeskClockScreen(
     var timeoutMillis by remember { mutableLongStateOf(prefs.getLong("pref_timeout_millis", -1L)) }
     var layoutMode by remember {
         val savedModeStr = prefs.getString("pref_layout_mode", ClockLayoutMode.SINGLE.name)
-        val mode = try { ClockLayoutMode.valueOf(savedModeStr ?: ClockLayoutMode.SINGLE.name) } catch (e: Exception) { ClockLayoutMode.SINGLE }
+        val mode = ClockLayoutMode.fromPersisted(savedModeStr)
         mutableStateOf(mode)
     }
 
@@ -3756,9 +3754,7 @@ fun SideDateWidget(
         }
     }
 
-    val calendar = remember(currentTime) {
-        Calendar.getInstance().apply { timeInMillis = currentTime }
-    }
+    val monthGrid = remember(currentTime) { MonthGrid.at(currentTime, TimeZone.getDefault()) }
 
     val dateObj = remember(currentTime) { Date(currentTime) }
     val dayOfWeekStr = remember(currentTime) {
@@ -3774,15 +3770,9 @@ fun SideDateWidget(
         getCachedDateFormat("MMMM", Locale.US).format(dateObj).uppercase(Locale.US)
     }
 
-    val currentDay = calendar.get(Calendar.DAY_OF_MONTH)
-    val maxDay = calendar.getActualMaximum(Calendar.DAY_OF_MONTH)
-    val firstDayOfWeek = remember(currentTime) {
-        val cal = Calendar.getInstance().apply {
-            timeInMillis = currentTime
-            set(Calendar.DAY_OF_MONTH, 1)
-        }
-        cal.get(Calendar.DAY_OF_WEEK) - 1
-    }
+    val currentDay = monthGrid.day
+    val maxDay = monthGrid.daysInMonth
+    val firstDayOfWeek = monthGrid.firstDayOffset
 
     val daysOfWeek = listOf("S", "M", "T", "W", "T", "F", "S")
 
@@ -4664,9 +4654,10 @@ fun AnalogClockFace(
             val cy = height / 2f
             val baseRadius = minOf(width, height) / 2f
 
-            val hourAngleDeg = (hours + minutes / 60f + seconds / 3600f) * 30f - 90f
-            val minAngleDeg = (minutes + seconds / 60f) * 6f - 90f
-            val secAngleDeg = seconds * 6f - 90f
+            val angles = ClockAngles.at(hours, minutes, seconds)
+            val hourAngleDeg = angles.hourDegrees
+            val minAngleDeg = angles.minuteDegrees
+            val secAngleDeg = angles.secondDegrees
 
             when (analogStyleIndex) {
                 0 -> {
