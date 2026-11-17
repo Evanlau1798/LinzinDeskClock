@@ -10,8 +10,8 @@ android {
         applicationId = "com.linzin.linzindeskclock.legacy.spike"
         minSdk = 14
         targetSdk = 37
-        versionCode = 1
-        versionName = "0.1-spike"
+        versionCode = 2
+        versionName = "0.2-spike"
         testInstrumentationRunner = "com.linzin.legacy.LegacyInstrumentation"
         vectorDrawables {
             useSupportLibrary = false
