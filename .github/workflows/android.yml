@@ -31,6 +31,8 @@ jobs:
         run: bash ./gradlew :app:assembleDebug :app:assembleDebugAndroidTest :app:assembleRelease :app-legacy:assembleDebug :app-legacy:assembleDebugAndroidTest :app-legacy:assembleRelease --console=plain
       - name: Test mapping retention
         run: python3 -m unittest discover -s scripts -p test_r8_artifacts.py -v
+      - name: Test Legacy soak controllers
+        run: python3 -m unittest discover -s scripts -p 'test_legacy*soak.py' -v
       - name: Export verified release mapping pair
         run: >-
           python3 scripts/r8_artifacts.py export --module app
