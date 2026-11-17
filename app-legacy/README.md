@@ -22,11 +22,26 @@ Original feasibility release screenshots (before the eight-style integration):
 ![API14 at 320x480](../docs/images/legacy-api14-spike.png)
 ![API19 at 480x800](../docs/images/legacy-api19-spike.png)
 
-The experimental application ID is `com.linzin.linzindeskclock.legacy.spike`.
-It does not replace the original app. Release probes use an explicitly local
-test signature, not an upstream or production signing identity. Version 2 keeps
-the experimental identity and increments versionCode for upgrades from version 1.
-Final signing and release policy remain separate work.
+The default experimental application ID is `com.linzin.linzindeskclock.legacy.spike`.
+Version 2 keeps that identity and increments versionCode for upgrades from version 1.
+For a separate fork test build, pass a distinct application ID to Gradle:
+
+```powershell
+.\gradlew.bat :app-legacy:assembleRelease :app-legacy:assembleDebugAndroidTest "-PlegacyApplicationId=io.github.evanlau1798.linzindeskclock.legacy"
+```
+
+The property applies to the app and its instrumentation target and writes both
+APKs under `app-legacy/build/alternate-id/outputs/apk/`. A different ID installs
+as a separate app with its own settings. Build without the property for the
+standard matrix and emulator soak. For an override smoke, install the locally
+test-signed release and the matching test APK, then use the matching runner:
+
+```powershell
+adb -s emulator-5562 shell am instrument -w -e mode clock io.github.evanlau1798.linzindeskclock.legacy.test/com.linzin.legacy.LegacyInstrumentation
+```
+
+Release probes use a local test signature. The application ID and signing key
+for a public release are decisions for the maintainer of that release.
 
 Four-language weather fixtures also exercise wrapping and scrolling at fontScale 2.
 These screenshots show the scrolled lower portion with reachable actions:
@@ -277,8 +292,9 @@ that cannot resume its display fails the power control rather than bypassing it.
 
 For the calibrated SOYES 7S (API23, serial `0123456789ABCDEF`), use a separate
 release copy with applicationId `com.linzin.linzindeskclock.legacy.profile` and
-its matching instrumentation APK. Build these from the accepted sources; keep
-the applicationId edit local and restore it before committing. The controller
+its matching instrumentation APK. Build both from the accepted sources with
+`-PlegacyApplicationId=com.linzin.linzindeskclock.legacy.profile` and pass the
+signed release and test APK from the alternate output directory. The controller
 checks both manifests before installation and refuses existing profile installs.
 The primary clock package remains installed with its own data.
 

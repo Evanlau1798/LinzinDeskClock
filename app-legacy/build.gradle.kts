@@ -2,12 +2,17 @@ import java.security.MessageDigest
 
 plugins { alias(libs.plugins.android.application) }
 
+val legacyApplicationId = providers.gradleProperty("legacyApplicationId")
+if (legacyApplicationId.isPresent) {
+    layout.buildDirectory.set(layout.projectDirectory.dir("build/alternate-id"))
+}
+
 android {
     namespace = "com.linzin.legacy"
     enableKotlin = false
     compileSdk { version = release(37) }
     defaultConfig {
-        applicationId = "com.linzin.linzindeskclock.legacy.spike"
+        applicationId = legacyApplicationId.orElse("com.linzin.linzindeskclock.legacy.spike").get()
         minSdk = 14
         targetSdk = 37
         versionCode = 2
