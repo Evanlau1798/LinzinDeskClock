@@ -34,6 +34,10 @@ final class LegacySoakChecks {
     }
 
     static void run(LegacyInstrumentation test) throws Exception {
+        run(test, DURATION, false);
+    }
+
+    static void run(LegacyInstrumentation test, long duration, boolean hardware) throws Exception {
         nonce = Process.myPid() + "-" + Long.toHexString(System.nanoTime());
         Context context = test.getTargetContext();
         File cache = context.getCacheDir();
@@ -44,6 +48,8 @@ final class LegacySoakChecks {
             .put("memory_class_mib", ((android.app.ActivityManager) context.getSystemService(Context.ACTIVITY_SERVICE)).getMemoryClass())
             .put("weather_transport", "controlled URLConnection fixture; not live HTTPS");
         try {
+            if (hardware) HardwareSoakChecks.emit(test, "start", new JSONObject().put("nonce", nonce)
+                .put("pid", Process.myPid()).put("duration_ms", duration));
             seed(context); ForecastDataChecks.install(); test.launch();
             checkClock(test, test.activity);
             Activity activity = test.activity;
@@ -60,7 +66,8 @@ final class LegacySoakChecks {
             waitFor(() -> test.clockResumes > resumes && keepsOn(test, activity), "Launcher must resume the clock");
             result.put("home", true);
 
-            phase(test, cache, "power-ready", began);
+            if (hardware) HardwareSoakChecks.power(test, nonce);
+            else phase(test, cache, "power-ready", began);
             test.runOnMainSync(() -> test.getTargetContext().startActivity(launch));
             waitFor(() -> keepsOn(test, activity) && activity.hasWindowFocus(), "Real screen wake must restore the clock");
             checkClock(test, activity);
@@ -80,29 +87,35 @@ final class LegacySoakChecks {
             check(!recovered.contains("unavailable") && rows(test, activity) == 4, "Recovery must clear the error and retain four forecasts");
             result.put("recovered", recovered);
 
-            phase(test, cache, "date-before", began);
-            waitFor(() -> date(test, activity, 2026, Calendar.DECEMBER, 31, "12/31"), "Clock must show December 31 before the boundary");
-            result.put("date_before", readout(test, activity));
-            phase(test, cache, "date-after", began);
-            waitFor(() -> date(test, activity, 2027, Calendar.JANUARY, 1, "1/1"), "Clock must advance across the actual emulator date boundary");
-            result.put("date_after", readout(test, activity));
-            phase(test, cache, "date-restore", began);
-            waitFor(() -> Math.abs(System.currentTimeMillis() - wallBegan - (SystemClock.elapsedRealtime() - began)) < 60000,
-                "Controller must restore the original wall-clock timeline");
+            if (!hardware) {
+                phase(test, cache, "date-before", began);
+                waitFor(() -> date(test, activity, 2026, Calendar.DECEMBER, 31, "12/31"), "Clock must show December 31 before the boundary");
+                result.put("date_before", readout(test, activity));
+                phase(test, cache, "date-after", began);
+                waitFor(() -> date(test, activity, 2027, Calendar.JANUARY, 1, "1/1"), "Clock must advance across the actual emulator date boundary");
+                result.put("date_after", readout(test, activity));
+                phase(test, cache, "date-restore", began);
+                waitFor(() -> Math.abs(System.currentTimeMillis() - wallBegan - (SystemClock.elapsedRealtime() - began)) < 60000,
+                    "Controller must restore the original wall-clock timeline");
+            }
 
             int samples = 0;
             result.put("observing_started_ms", SystemClock.elapsedRealtime() - began);
-            while (SystemClock.elapsedRealtime() - began < DURATION) {
+            while (SystemClock.elapsedRealtime() - began < duration) {
                 checkActiveClock(test, activity);
                 Debug.MemoryInfo memory = new Debug.MemoryInfo(); Debug.getMemoryInfo(memory);
                 long heap = Runtime.getRuntime().totalMemory() - Runtime.getRuntime().freeMemory();
                 checkMemory(heap, memory.getTotalPss());
-                write(cache, "linzin-soak-phase.json", new JSONObject().put("nonce", nonce).put("phase", "observing")
+                JSONObject sample = new JSONObject().put("nonce", nonce).put("phase", "observing")
                     .put("elapsed_ms", SystemClock.elapsedRealtime() - began).put("pid", Process.myPid())
                     .put("pss_kib", memory.getTotalPss())
                     .put("heap_used_bytes", heap)
-                    .put("readout", readout(test, activity)).toString());
+                    .put("readout", readout(test, activity));
+                write(cache, "linzin-soak-phase.json", sample.toString());
+                if (hardware) HardwareSoakChecks.emit(test, "sample", sample);
                 samples++;
+                if (hardware) check(Math.abs(System.currentTimeMillis() - wallBegan - (SystemClock.elapsedRealtime() - began)) < 60000,
+                    "Physical wall-clock timeline changed during observation");
                 SystemClock.sleep(28000);
             }
             result.put("samples", samples).put("duration_ms", SystemClock.elapsedRealtime() - began)
@@ -125,8 +138,12 @@ final class LegacySoakChecks {
                 } else throw new AssertionError("Unsupported preference value: " + key);
             }
             boolean restored = restore.commit();
+            if (hardware) restored &= previous.equals(context.getSharedPreferences("desk_clock_prefs", 0).getAll());
             if (!restored) result.put("status", "FAIL").put("error", "Could not restore test preferences");
+            result.put("preferences_restored", restored);
+            if (hardware) result.put("clock_unchanged", Math.abs(System.currentTimeMillis() - wallBegan - (SystemClock.elapsedRealtime() - began)) < 60000);
             write(cache, "linzin-soak-result.json", result.toString());
+            if (hardware) HardwareSoakChecks.emit(test, "result", result);
             check(restored, "Could not restore test preferences");
         }
     }

@@ -275,6 +275,33 @@ separate check in `Test-Legacy.ps1`; this fixture run does not prove live-servic
 availability, physical-device performance or complete G5 acceptance. An emulator
 that cannot resume its display fails the power control rather than bypassing it.
 
+For the calibrated SOYES 7S (API23, serial `0123456789ABCDEF`), use a separate
+release copy with applicationId `com.linzin.linzindeskclock.legacy.profile` and
+its matching instrumentation APK. Build these from the accepted sources; keep
+the applicationId edit local and restore it before committing. The controller
+checks both manifests before installation and refuses existing profile installs.
+The primary clock package remains installed with its own data.
+
+```powershell
+python scripts/Test-LegacyHardwareSoak.py --serial 0123456789ABCDEF --apk PROFILE_RELEASE.apk --test-apk PROFILE_TEST.apk --window check
+python scripts/Test-LegacyHardwareSoak.py --serial 0123456789ABCDEF --apk PROFILE_RELEASE.apk --test-apk PROFILE_TEST.apk --window 30m
+python scripts/Test-LegacyHardwareSoak.py --serial 0123456789ABCDEF --apk PROFILE_RELEASE.apk --test-apk PROFILE_TEST.apk --window 8h
+```
+
+Run the short check first, then thirty minutes before the eight-hour observation.
+Keep the device unlocked without a secure keyguard, upright and USB powered.
+Actual ADB screen off/on is confirmed inside the test process using a nonce-bound,
+DUMP-protected receiver; only the non-secure lock screen is swiped away.
+OET/seconds, Home return, controlled weather loss/recovery, process continuity,
+heap/PSS budgets and linked crash/ANR logs are checked. The device clock and
+system display settings are not changed. The profile's preferences are restored
+and verified before its result; owned profile installations are removed on exit,
+and the primary clock is reopened. Cleanup failures prevent acceptance.
+The `check` window is only a short fixture check, never a long-duration result.
+Evidence is stored in ignored `tmp/hardware-soak-*`; live HTTPS and API14/19
+compatibility remain separate gates. Memory samples do not represent continuous
+peaks, and a single calibrated device does not establish all-device support.
+
 API14 was Android 4.0.2, official default ARM v7a image r2, with the archived
 official Emulator 26.1.4 classic engine. Modern QEMU2 rejects that ARM image.
 API19 was Android 4.4.2, official default x86 image r6, on Emulator 36.1.9/WHPX.

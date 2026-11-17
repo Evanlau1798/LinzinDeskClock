@@ -37,7 +37,9 @@ public class LegacyInstrumentation extends Instrumentation {
         Bundle result = new Bundle();
         int code = Activity.RESULT_OK;
         try {
-            if (mode.startsWith("frameSetup")) {
+            if (mode.startsWith("hardwareSoak")) {
+                HardwareSoakChecks.run(this, mode); result.putString("stream", "OK: " + mode);
+            } else if (mode.startsWith("frameSetup")) {
                 FrameSetupChecks.run(this, mode.substring(10)); result.putString("stream", "OK: " + mode);
             } else if ("analogRendering".equals(mode)) {
                 AnalogRenderingChecks.run(getTargetContext());
