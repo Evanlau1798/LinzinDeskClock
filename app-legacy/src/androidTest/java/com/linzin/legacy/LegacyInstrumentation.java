@@ -37,7 +37,12 @@ public class LegacyInstrumentation extends Instrumentation {
         Bundle result = new Bundle();
         int code = Activity.RESULT_OK;
         try {
-            if ("tlsProfileChecks".equals(mode) || "tlsProfile".equals(mode)) {
+            if (mode.startsWith("frameSetup")) {
+                FrameSetupChecks.run(this, mode.substring(10)); result.putString("stream", "OK: " + mode);
+            } else if ("analogRendering".equals(mode)) {
+                AnalogRenderingChecks.run(getTargetContext());
+                result.putString("stream", "OK: fresh/reused analog rendering across sizes, styles and seconds");
+            } else if ("tlsProfileChecks".equals(mode) || "tlsProfile".equals(mode)) {
                 if ("tlsProfileChecks".equals(mode)) TlsProfileChecks.check(getTargetContext());
                 else TlsProfileChecks.run(this);
                 result.putString("stream", "OK: " + mode);
