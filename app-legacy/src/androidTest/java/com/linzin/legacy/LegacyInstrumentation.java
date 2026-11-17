@@ -37,7 +37,11 @@ public class LegacyInstrumentation extends Instrumentation {
         Bundle result = new Bundle();
         int code = Activity.RESULT_OK;
         try {
-            if ("soakFixtureChecks".equals(mode)) {
+            if ("tlsProfileChecks".equals(mode) || "tlsProfile".equals(mode)) {
+                if ("tlsProfileChecks".equals(mode)) TlsProfileChecks.check(getTargetContext());
+                else TlsProfileChecks.run(this);
+                result.putString("stream", "OK: " + mode);
+            } else if ("soakFixtureChecks".equals(mode)) {
                 LegacySoakChecks.fixtureChecks(); result.putString("stream", "OK: controlled offline and replacement weather fixture");
             } else if ("soakControlled".equals(mode)) {
                 LegacySoakChecks.run(this);

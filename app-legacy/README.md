@@ -218,6 +218,24 @@ Builds use the checked-in frozen BKS; they never download or regenerate roots.
 
 ## Environment and limits
 
+### Cold TLS runtime diagnostic
+
+On an isolated test installation, run native instrumentation mode `tlsProfileChecks`
+for success/failure sample retention and sampler cleanup, then `tlsProfile` in a
+fresh instrumentation process. The latter clears this test app's preferences and
+uses its public weather action to make one verified GitHub HTTPS control request.
+It requires HTTP 200, a TLS handshake and complete response-body consumption;
+body read failures remain failures. It retains the product TLS, trust, hostname
+and timeout policies. The GitHub JSON
+is deliberately not weather data; this does not accept live Open-Meteo weather.
+
+`PROFILE:` is emitted on success and failure, without converting a failed control
+into a pass. It includes PID, HTTP/TLS outcome, 50 ms sampled Java heap peak and
+an end-of-window PSS snapshot. Sampling begins before clock launch and cold TLS
+initialization. Instrumentation adds memory overhead, brief peaks may be missed,
+and the PSS snapshot is not a peak. Record device memoryClass, power/display state
+and APK identity separately; use identical test instrumentation for comparisons.
+
 ### Controlled emulator soak
 
 Build `:app-legacy:assembleDebugAndroidTest`, then run the signed R8 candidate
