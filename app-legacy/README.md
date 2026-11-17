@@ -153,8 +153,22 @@ to the app's private files directory. Display checks use real OS rotation plus
 a fontScale 2 native view context, checking real 48dp touch targets without
 changing the emulator's global font setting. Socket checks connect to
 a silent loopback TLS peer and checks deadline/cancellation socket closure.
+Analog renderers reuse one static ARGB dial, bounded to 4 MiB and the Canvas bitmap
+limits. Changing style or size invalidates it. Larger surfaces or allocation
+failure retain the vector face; hands and the 180 ms seconds animation remain
+dynamic. OET also reuses its size-dependent paths.
 These modes reference unminified implementation classes; the external matrix
 above also works against R8 release builds.
+`analogRendering` is another debug-only check: fresh and reused analog renderers
+must produce identical pixels across style, seconds and size changes, including
+portrait/landscape sizes with the same radius. It saves 40 PNGs, including the
+original 25 compared with a previous build on the same API image.
+For frame measurements on an isolated installation, `frameSetupTK` through
+`frameSetupFFT` (the eight public style labels) clear that test app's preferences,
+select the style through its public control, enable seconds and verify reopening.
+These setup modes work with R8. Then use `am start -S -W` to measure a fresh,
+uninstrumented product process; exclude setup and the initial warm-up interval
+from `dumpsys gfxinfo` windows. This does not replace lifecycle or long-soak checks.
 Additional debug-only modes are `weatherParserChecks`, `weatherAutoRefresh`,
 `weatherGeoDeadline`, `weatherTotalDeadline`, `weatherRollback`,
 `calendarRange`, `calendarContent`, `locatorCache`, `locatorFix`,

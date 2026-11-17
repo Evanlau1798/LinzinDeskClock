@@ -1,5 +1,6 @@
 package com.linzin.legacy;
 
+import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
@@ -9,7 +10,15 @@ import com.linzin.clockcore.ClockAngles;
 final class AnalogClockFace {
     private final ClockArtwork artwork;
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private final Path shape = new Path();
+    private final Path[] diamonds = new Path[12];
+    private final Path hourSword = new Path(), minuteSword = new Path();
+    private int shapeWidth = -1, shapeHeight = -1;
+    private Bitmap dial;
+    private boolean dialUnavailable;
+    private int dialWidth = -1, dialHeight = -1;
+    private ClockAppearance dialStyle;
+    // Limit optional dial storage to 4 MiB; large windows retain vector rendering.
+    private static final int MAX_DIAL_PIXELS = 1_048_576;
     private static final int[] NUMBERS = { 12, 3, 6, 9 };
     private static final int[] COLORS = { 0xffffd166, 0xff81c784, 0xffff708d, 0xff90caf9 };
     private final float density;
@@ -23,6 +32,62 @@ final class AnalogClockFace {
         }
     }
     void draw(Canvas canvas, int width, int height, ClockAppearance style, ClockAngles angles, float second, boolean seconds) {
+        float cx = width / 2f, cy = height / 2f, r = Math.min(width, height) / 2f;
+        if (style == ClockAppearance.OET) prepareShapes(width, height);
+        if (dialWidth != width || dialHeight != height || dialStyle != style) {
+            dial = null; dialUnavailable = false;
+            dialWidth = width; dialHeight = height; dialStyle = style;
+        }
+        if (width > 0 && height > 0
+            && (long) width * height <= MAX_DIAL_PIXELS
+            && width <= canvas.getMaximumBitmapWidth() && height <= canvas.getMaximumBitmapHeight()) {
+            if (dial == null && !dialUnavailable) {
+                dial = buildDial(width, height, bitmap -> drawFace(new Canvas(bitmap), width, height, style));
+                if (dial == null) dialUnavailable = true;
+            }
+            if (dial == null) drawFace(canvas, width, height, style);
+            else canvas.drawBitmap(dial, 0, 0, null);
+        } else drawFace(canvas, width, height, style);
+        paint.setStyle(Paint.Style.FILL);
+        if (style == ClockAppearance.OET) {
+            sword(canvas, cx, cy, angles.hourDegrees, hourSword);
+            sword(canvas, cx, cy, angles.minuteDegrees, minuteSword);
+        } else {
+            hand(canvas, cx, cy, angles.hourDegrees, style == ClockAppearance.ZMG ? -r * .10f : 0,
+                r * (style == ClockAppearance.ZMG ? .48f : .52f), style == ClockAppearance.ZMG ? 0xfff3eee6 : Color.WHITE,
+                Math.min(8 * density, r * .08f));
+            hand(canvas, cx, cy, angles.minuteDegrees, style == ClockAppearance.ZMG ? -r * .10f : 0,
+                r * (style == ClockAppearance.ZMG ? .72f : .78f), style == ClockAppearance.ZMG ? 0xffe09f67 : Color.WHITE,
+                Math.min(5.5f * density, r * .055f));
+        }
+        int secondColor = style == ClockAppearance.ABW ? 0xff181818 : style == ClockAppearance.OET ? 0xffd4af37 : 0xffff5252;
+        if (seconds) {
+            hand(canvas, cx, cy, second, -r * .16f, r * .86f, secondColor, Math.min(2 * density, r * .025f));
+            if (style == ClockAppearance.ZMG) {
+                double rad = Math.toRadians(second);
+                paint.setColor(secondColor);
+                canvas.drawCircle(cx + (float) Math.cos(rad) * r * .82f, cy + (float) Math.sin(rad) * r * .82f,
+                    Math.min(5.2f * density, r * .06f), paint);
+            }
+        }
+        paint.setColor(style == ClockAppearance.OET ? 0xffd4af37 : style == ClockAppearance.ZMG ? 0xfff3eee6 : Color.WHITE);
+        canvas.drawCircle(cx, cy, Math.min(7 * density, r * .08f), paint);
+        if (seconds) { paint.setColor(secondColor); canvas.drawCircle(cx, cy, Math.min(3 * density, r * .035f), paint); }
+    }
+    interface DialPainter { void draw(Bitmap bitmap); }
+    static Bitmap buildDial(int width, int height, DialPainter painter) {
+        Bitmap pending = null;
+        try {
+            pending = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
+            painter.draw(pending);
+            Bitmap complete = pending;
+            pending = null;
+            return complete;
+        }
+        catch (OutOfMemoryError unavailable) { return null; }
+        finally { if (pending != null) pending.recycle(); }
+    }
+    private void drawFace(Canvas canvas, int width, int height, ClockAppearance style) {
         float cx = width / 2f, cy = height / 2f, r = Math.min(width, height) / 2f;
         canvas.drawColor(style == ClockAppearance.ABW ? 0xffeed55e : style == ClockAppearance.OET ? 0xff0d0d11 : 0xff161413);
         paint.setStyle(Paint.Style.FILL);
@@ -38,10 +103,7 @@ final class AnalogClockFace {
                     major ? 0xff181818 : 0x8c181818, (major ? 3.5f : 1.8f) * density, Paint.Cap.SQUARE);
             } else if (style == ClockAppearance.OET) {
                 if (major) {
-                    float px = cx + x * r * .885f, py = cy + y * r * .885f, size = Math.min(3.2f * density, r * .04f);
-                    shape.reset(); shape.moveTo(px, py - size); shape.lineTo(px + size * .7f, py);
-                    shape.lineTo(px, py + size); shape.lineTo(px - size * .7f, py); shape.close();
-                    paint.setColor(0xffd4af37); canvas.drawPath(shape, paint);
+                    paint.setColor(0xffd4af37); canvas.drawPath(diamonds[i / 5], paint);
                 } else line(canvas, cx + x * r * .85f, cy + y * r * .85f, cx + x * r * .92f, cy + y * r * .92f,
                     0x808c7326, density, Paint.Cap.SQUARE);
             } else {
@@ -69,35 +131,30 @@ final class AnalogClockFace {
             artwork.draw(canvas, name, nx - w / 2, ny - numberHeight / 2, numberHeight,
                 style == ClockAppearance.ABW ? null : style == ClockAppearance.OET ? 0xffd4af37 : COLORS[i]);
         }
-        if (style == ClockAppearance.OET) {
-            sword(canvas, cx, cy, angles.hourDegrees, r * .50f, Math.min(4.8f * density, r * .05f));
-            sword(canvas, cx, cy, angles.minuteDegrees, r * .75f, Math.min(3.8f * density, r * .04f));
-        } else {
-            hand(canvas, cx, cy, angles.hourDegrees, style == ClockAppearance.ZMG ? -r * .10f : 0,
-                r * (style == ClockAppearance.ZMG ? .48f : .52f), style == ClockAppearance.ZMG ? 0xfff3eee6 : Color.WHITE,
-                Math.min(8 * density, r * .08f));
-            hand(canvas, cx, cy, angles.minuteDegrees, style == ClockAppearance.ZMG ? -r * .10f : 0,
-                r * (style == ClockAppearance.ZMG ? .72f : .78f), style == ClockAppearance.ZMG ? 0xffe09f67 : Color.WHITE,
-                Math.min(5.5f * density, r * .055f));
-        }
-        int secondColor = style == ClockAppearance.ABW ? 0xff181818 : style == ClockAppearance.OET ? 0xffd4af37 : 0xffff5252;
-        if (seconds) {
-            hand(canvas, cx, cy, second, -r * .16f, r * .86f, secondColor, Math.min(2 * density, r * .025f));
-            if (style == ClockAppearance.ZMG) {
-                double rad = Math.toRadians(second);
-                paint.setColor(secondColor);
-                canvas.drawCircle(cx + (float) Math.cos(rad) * r * .82f, cy + (float) Math.sin(rad) * r * .82f,
-                    Math.min(5.2f * density, r * .06f), paint);
-            }
-        }
-        paint.setColor(style == ClockAppearance.OET ? 0xffd4af37 : style == ClockAppearance.ZMG ? 0xfff3eee6 : Color.WHITE);
-        canvas.drawCircle(cx, cy, Math.min(7 * density, r * .08f), paint);
-        if (seconds) { paint.setColor(secondColor); canvas.drawCircle(cx, cy, Math.min(3 * density, r * .035f), paint); }
     }
-    private void sword(Canvas canvas, float x, float y, float angle, float length, float width) {
-        canvas.save(); canvas.translate(x, y); canvas.rotate(angle);
+    private void prepareShapes(int width, int height) {
+        if (shapeWidth == width && shapeHeight == height) return;
+        float cx = width / 2f, cy = height / 2f, r = Math.min(width, height) / 2f;
+        // Stable paths let the hardware renderer reuse geometry between animation frames.
+        for (int i = 0; i < diamonds.length; i++) {
+            double angle = Math.toRadians(i * 30 - 90);
+            float x = (float) Math.cos(angle), y = (float) Math.sin(angle);
+            float px = cx + x * r * .885f, py = cy + y * r * .885f, size = Math.min(3.2f * density, r * .04f);
+            Path shape = diamonds[i];
+            if (shape == null) diamonds[i] = shape = new Path();
+            shape.reset(); shape.moveTo(px, py - size); shape.lineTo(px + size * .7f, py);
+            shape.lineTo(px, py + size); shape.lineTo(px - size * .7f, py); shape.close();
+        }
+        prepareSword(hourSword, r * .50f, Math.min(4.8f * density, r * .05f));
+        prepareSword(minuteSword, r * .75f, Math.min(3.8f * density, r * .04f));
+        shapeWidth = width; shapeHeight = height;
+    }
+    private static void prepareSword(Path shape, float length, float width) {
         shape.reset(); shape.moveTo(length, 0); shape.lineTo(length * .72f, width * .85f); shape.lineTo(0, width);
         shape.lineTo(-length * .18f, 0); shape.lineTo(0, -width); shape.lineTo(length * .72f, -width * .85f); shape.close();
+    }
+    private void sword(Canvas canvas, float x, float y, float angle, Path shape) {
+        canvas.save(); canvas.translate(x, y); canvas.rotate(angle);
         paint.setColor(0xffe8e8ee); canvas.drawPath(shape, paint);
         paint.setStyle(Paint.Style.STROKE); paint.setStrokeWidth(1.2f * density); paint.setColor(0xffd4af37);
         canvas.drawPath(shape, paint); paint.setStyle(Paint.Style.FILL); canvas.restore();
