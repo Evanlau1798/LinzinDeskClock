@@ -47,7 +47,7 @@ public class LegacyInstrumentation extends Instrumentation {
                 else TlsProfileChecks.run(this);
                 result.putString("stream", "OK: " + mode);
             } else if ("soakFixtureChecks".equals(mode)) {
-                LegacySoakChecks.fixtureChecks(); result.putString("stream", "OK: controlled offline and replacement weather fixture");
+                LegacySoakChecks.fixtureChecks(this); result.putString("stream", "OK: analog clock and controlled offline/replacement weather fixture");
             } else if ("soakControlled".equals(mode)) {
                 LegacySoakChecks.run(this);
                 result.putString("stream", "OK: real thirty-minute runtime with Home/power and controlled network/date boundaries");

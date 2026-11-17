@@ -260,6 +260,13 @@ python scripts/Test-LegacySoak.py --serial 127.0.0.1:5561 --console-port 5560 --
 ```
 
 This observes thirty real minutes, Home/launcher and actual screen off/on.
+The OET analog style runs with seconds enabled so the bounded dial cache and
+hands remain exercised. Linked native observations retain heap and PSS snapshots;
+each observing sample must stay within the fixed 64 MiB heap and 80 MiB PSS
+budgets. These are periodic snapshots, not continuous peak measurements.
+Every native observation verifies OET, seconds and both memory budgets. Host
+samples must cover the observing interval, including its ends, with no gap over
+90 seconds; duplicate or isolated snapshots cannot accept the run.
 Weather outage/recovery uses an explicit URLConnection fixture, and the emulator
 clock briefly crosses December 31 into January 1 before returning to host UTC.
 Preferences are backed up and restored; the selected test app is stopped on exit.
