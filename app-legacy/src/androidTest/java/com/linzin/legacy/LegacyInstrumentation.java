@@ -15,7 +15,7 @@ import java.net.URL;
 import java.util.Locale;
 
 public class LegacyInstrumentation extends Instrumentation {
-    private Activity activity;
+    Activity activity;
     private String mode;
     volatile int clockResumes, clockStops;
     private volatile Activity resumedActivity;
@@ -37,7 +37,12 @@ public class LegacyInstrumentation extends Instrumentation {
         Bundle result = new Bundle();
         int code = Activity.RESULT_OK;
         try {
-            if ("probeChecks".equals(mode)) {
+            if ("soakFixtureChecks".equals(mode)) {
+                LegacySoakChecks.fixtureChecks(); result.putString("stream", "OK: controlled offline and replacement weather fixture");
+            } else if ("soakControlled".equals(mode)) {
+                LegacySoakChecks.run(this);
+                result.putString("stream", "OK: real thirty-minute runtime with Home/power and controlled network/date boundaries");
+            } else if ("probeChecks".equals(mode)) {
                 HttpsProbeChecks.run(); result.putString("stream", "OK: per-request TLS outcome and endpoint isolation controls");
             } else if ("primeOldGps".equals(mode)) {
                 LocatorUiChecks.primeOld(this); result.putString("stream", "OK: dated GPS cache fixture and listener removal");
@@ -355,7 +360,7 @@ public class LegacyInstrumentation extends Instrumentation {
         }
         finish(code, result);
     }
-    private void launch() { launch(true); }
+    void launch() { launch(true); }
     private void launch(boolean hideGuide) {
         if (hideGuide) getTargetContext().getSharedPreferences("desk_clock_prefs", Context.MODE_PRIVATE).edit()
             .putBoolean("pref_dismiss_gesture_tutorial", true).commit();
