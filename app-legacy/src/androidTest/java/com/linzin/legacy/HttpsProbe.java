@@ -29,11 +29,22 @@ final class HttpsProbe {
     static synchronized void begin(URL endpoint) { generation++; target = endpoint; failure = null; status = 0; protocol = null; bodyComplete = false; peer = null; socketHost = null; outcomes.setLength(0); }
 
     static void install(URL endpoint) {
+        install(endpoint, true);
+    }
+
+    static void installLoopback(URL endpoint) {
+        if (!"https".equals(endpoint.getProtocol()) || !"127.0.0.1".equals(endpoint.getHost()))
+            throw new IllegalArgumentException("An HTTPS loopback endpoint is required");
+        install(endpoint, false);
+    }
+
+    private static void install(URL endpoint, boolean forwardOtherHosts) {
         begin(endpoint);
         URL.setURLStreamHandlerFactory(scheme -> !"https".equals(scheme) && !"http".equals(scheme) ? null : new URLStreamHandler() {
             @Override protected URLConnection openConnection(URL url) throws IOException {
                 if (!"https".equals(url.getProtocol())) { cleartext = true; throw new IOException("Cleartext is forbidden"); }
                 if (!"api.open-meteo.com".equals(url.getHost())) {
+                    if (!forwardOtherHosts) throw new IOException("External HTTPS is disabled for the loopback fixture");
                     // A scheme-relative URL retains the original handler instead of re-entering our factory.
                     return new URL(target, url.toExternalForm().substring("https:".length())).openConnection();
                 }
