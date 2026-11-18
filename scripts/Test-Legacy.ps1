@@ -1,7 +1,8 @@
 param(
     [Parameter(Mandatory=$true)][string]$Serial,
     [Parameter(Mandatory=$true)][string]$Apk,
-    [string]$Adb = "$env:LOCALAPPDATA\Android\Sdk\platform-tools\adb.exe"
+    [string]$Adb = "$env:LOCALAPPDATA\Android\Sdk\platform-tools\adb.exe",
+    [switch]$OfflineOnly
 )
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path $PSScriptRoot -Parent
@@ -75,9 +76,14 @@ try {
     Invoke-Fixture 'create'
     Invoke-Case 'calendar'
     Invoke-Case 'calendarOff'
-    Invoke-Case 'network'
-    Invoke-Case 'updateLive'
-    Invoke-Case 'tls'
+    if ($OfflineOnly) {
+        Write-Host 'SKIP: live Open-Meteo, GitHub and public TLS endpoint checks'
+    } else {
+        Invoke-Case 'network'
+        Invoke-Case 'updateLive'
+        Invoke-Case 'tls'
+    }
     Invoke-Case 'paneCancellation'
 } finally { Invoke-Fixture 'cleanup' }
-Write-Host "PASS: Legacy external matrix on $Serial (API$api)"
+$scope = if ($OfflineOnly) { 'offline fixture' } else { 'external' }
+Write-Host "PASS: Legacy $scope matrix on $Serial (API$api)"

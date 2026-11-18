@@ -16,7 +16,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 final class PaneCancellationChecks implements java.io.Closeable {
-    final URL endpoint;
+    private final URL endpoint;
     private final ServerSocket listener;
     private final AtomicReference<Socket> peer = new AtomicReference<>();
     private final CountDownLatch accepted = new CountDownLatch(1), closed = new CountDownLatch(1);
@@ -32,6 +32,12 @@ final class PaneCancellationChecks implements java.io.Closeable {
             } catch (IOException ignored) { }
         });
         server.start();
+    }
+    void install() throws IOException {
+        HttpsProbe.installLoopback(endpoint);
+        try { new URL("https://fixture.invalid/").openConnection(); }
+        catch (IOException expected) { return; }
+        throw new AssertionError("Cancellation fixture must refuse external HTTPS before opening a connection");
     }
     void run(Instrumentation test, Activity activity) throws Exception {
         Button refresh = activity.getWindow().getDecorView().findViewWithTag("weather_refresh");

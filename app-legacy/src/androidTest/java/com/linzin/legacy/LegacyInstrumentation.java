@@ -218,7 +218,7 @@ public class LegacyInstrumentation extends Instrumentation {
                 getTargetContext().getSharedPreferences("desk_clock_prefs", Context.MODE_PRIVATE).edit()
                     .putString("pref_last_valid_lat", "25.0").putString("pref_last_valid_lon", "121.0").commit();
                 try (PaneCancellationChecks fixture = new PaneCancellationChecks()) {
-                    HttpsProbe.install(fixture.endpoint); launch(); fixture.run(this, activity);
+                    fixture.install(); launch(); fixture.run(this, activity);
                 }
                 result.putString("stream", "OK: hidden weather cancels transport, clears updating state and rejects late results");
             } else if ("gestures".equals(mode)) {

@@ -151,6 +151,12 @@ It fails on unavailable live services and
 cleans up its own calendar in `finally`. It resets **this experimental app's**
 preferences. Use isolated AVDs. Every ADB command includes the supplied serial.
 
+Add `-OfflineOnly` to validate against fixtures without calling live Open-Meteo,
+GitHub or public TLS test endpoints. Weather parsing, forecast and location
+fixtures, update handling, the local cancellation peer and CalendarProvider
+checks still run. The runner prints `PASS: Legacy offline fixture matrix` for
+this scope. Live-service validation remains a separate check.
+
 The `legacy-test-fixture` APK is test-only, has no launcher, and is the only
 module with calendar write permission. It records its own calendar ID and
 checks ownership before deletion. The product requests only READ_CALENDAR.
